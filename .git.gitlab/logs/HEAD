@@ -1,0 +1,7 @@
+0000000000000000000000000000000000000000 b6ceda1dffb6f39503935628b9691785cfe2f26e jiangshengpei <j@raisethink.com> 1764567263 +0800	commit (initial): Initial commit
+b6ceda1dffb6f39503935628b9691785cfe2f26e 47aa82f5c5f32a2ed96234f96f39db48c9b12be8 jiangshengpei <j@raisethink.com> 1764567285 +0800	pull --rebase origin main (start): checkout 47aa82f5c5f32a2ed96234f96f39db48c9b12be8
+47aa82f5c5f32a2ed96234f96f39db48c9b12be8 4b7dd960c474a8490437abf05cc64bf2dc3f1773 jiangshengpei <j@raisethink.com> 1764567285 +0800	pull --rebase origin main (pick): Initial commit
+4b7dd960c474a8490437abf05cc64bf2dc3f1773 4b7dd960c474a8490437abf05cc64bf2dc3f1773 jiangshengpei <j@raisethink.com> 1764567285 +0800	pull --rebase origin main (finish): returning to refs/heads/master
+4b7dd960c474a8490437abf05cc64bf2dc3f1773 0000000000000000000000000000000000000000 jiangshengpei <j@raisethink.com> 1764567342 +0800	Branch: renamed refs/heads/master to refs/heads/main
+0000000000000000000000000000000000000000 4b7dd960c474a8490437abf05cc64bf2dc3f1773 jiangshengpei <j@raisethink.com> 1764567342 +0800	Branch: renamed refs/heads/master to refs/heads/main
+4b7dd960c474a8490437abf05cc64bf2dc3f1773 b5ab980c28592da245d09ce095233b4538bf621e jiangshengpei <j@raisethink.com> 1764567977 +0800	commit: add macos script

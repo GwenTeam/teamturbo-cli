@@ -1,0 +1,40 @@
+# Rust 编译输出
+/target/
+
+# Rust crate 包管理器（Cargo）生成的文件
+#Cargo.lock
+# 注意：对于二进制项目（可执行程序），**建议提交 Cargo.lock**
+#      对于库项目（library），通常不提交。可根据项目类型决定是否注释掉上面一行。
+
+# IDE 和编辑器
+**/*.rs.bk
+**/*.bk
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 日志和临时文件
+*.log
+*.tmp
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.*.swp
+.*.swo
+
+# Rust Analyzer / rust-analyzer
+rust-project.json
+
+# Clippy 和其他工具可能生成的文件
+clippy.toml
