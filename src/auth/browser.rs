@@ -3,6 +3,7 @@ use console::style;
 use std::time::Duration;
 use reqwest::Client;
 use crate::auth::{generate_login_id, AuthConfig, PollResponse};
+use crate::utils::logger;
 
 /// Authorize via browser (mode 1)
 pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
@@ -75,8 +76,10 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        println!("\n[DEBUG] Polling URL: {}", poll_url);
-        println!("[DEBUG] Login ID: {}", login_id);
+        if logger::is_verbose() {
+            println!("\n[DEBUG] Polling URL: {}", poll_url);
+            println!("[DEBUG] Login ID: {}", login_id);
+        }
 
         let response = client
             .get(&poll_url)
@@ -84,15 +87,22 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
             .send()
             .await?;
 
-        println!("[DEBUG] Response status: {}", response.status());
+        if logger::is_verbose() {
+            println!("[DEBUG] Response status: {}", response.status());
+        }
 
         // Get response body as text first for debugging
         let body_text = response.text().await?;
-        println!("[DEBUG] Response body: {}", body_text);
+
+        if logger::is_verbose() {
+            println!("[DEBUG] Response body: {}", body_text);
+        }
 
         // Try to parse the response
         if body_text.is_empty() {
-            println!("[DEBUG] Empty response body, continuing...");
+            if logger::is_verbose() {
+                println!("[DEBUG] Empty response body, continuing...");
+            }
             continue;
         }
 
@@ -135,7 +145,9 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
                     }
                     "pending" => {
                         // Continue waiting
-                        println!("[DEBUG] Status: pending, continuing to poll...");
+                        if logger::is_verbose() {
+                            println!("[DEBUG] Status: pending, continuing to poll...");
+                        }
                         continue;
                     }
                     _ => {
@@ -144,7 +156,9 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
                 }
             } else {
                 // status == 0 but no auth data (e.g., pending with status 202)
-                println!("[DEBUG] No auth data yet, continuing to poll...");
+                if logger::is_verbose() {
+                    println!("[DEBUG] No auth data yet, continuing to poll...");
+                }
                 continue;
             }
         } else {
