@@ -15,6 +15,19 @@ echo ""
 # Create build directory
 mkdir -p $BUILD_DIR
 
+# macOS x86_64 (Intel)
+echo "[3/6] Building for macOS x86_64..."
+if rustup target list | grep -q "x86_64-apple-darwin (installed)"; then
+    cargo build --release --target x86_64-apple-darwin
+    cp target/x86_64-apple-darwin/release/teamturbo $BUILD_DIR/teamturbo-macos-x86_64
+    strip $BUILD_DIR/teamturbo-macos-x86_64
+    gzip -c $BUILD_DIR/teamturbo-macos-x86_64 > $BUILD_DIR/teamturbo-macos-x86_64.gz
+    echo "   ✓ macOS x86_64 complete"
+else
+    echo "   ⚠ Skipping macOS x86_64 build (target not installed)"
+    echo "     Run: rustup target add x86_64-apple-darwin"
+fi
+
 # macOS aarch64 (Apple Silicon)
 echo "[4/6] Building for macOS aarch64..."
 if rustup target list | grep -q "aarch64-apple-darwin (installed)"; then
