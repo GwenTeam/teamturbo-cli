@@ -111,7 +111,7 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     // Create empty category directories from category tree
     if let Some(ref category_tree) = docuram_config.category_tree {
         println!("{}", style("Creating category directories...").bold());
-        let created_count = create_category_directories(category_tree, "")?;
+        let created_count = create_category_directories(category_tree, "docuram")?;
         if created_count > 0 {
             println!("{}", style(format!("✓ Created {} category director(ies)", created_count)).green());
         }
@@ -295,19 +295,18 @@ docuram:
 
 /// Recursively create empty category directories
 /// Returns the count of directories created
-fn create_category_directories(category: &CategoryTree, parent_path: &str) -> Result<usize> {
+fn create_category_directories(category: &CategoryTree, root_path: &str) -> Result<usize> {
     let mut count = 0;
 
-    // Build category path
-    let category_name = sanitize_path_component(&category.name);
-    let current_path = if parent_path.is_empty() {
-        category_name.clone()
+    // Use the category's full path and prepend root_path (e.g., "docuram")
+    let full_path = if root_path.is_empty() {
+        category.path.clone()
     } else {
-        format!("{}/{}", parent_path, category_name)
+        format!("{}/{}", root_path, category.path)
     };
 
     // Create directory if it doesn't exist and has no documents
-    let dir_path = PathBuf::from(&current_path);
+    let dir_path = PathBuf::from(&full_path);
     if category.document_count == 0 && !dir_path.exists() {
         fs::create_dir_all(&dir_path)
             .with_context(|| format!("Failed to create directory: {:?}", dir_path))?;
@@ -318,20 +317,9 @@ fn create_category_directories(category: &CategoryTree, parent_path: &str) -> Re
     // Recursively create subdirectories
     if let Some(ref subcategories) = category.subcategories {
         for subcat in subcategories {
-            count += create_category_directories(subcat, &current_path)?;
+            count += create_category_directories(subcat, root_path)?;
         }
     }
 
     Ok(count)
-}
-
-/// Sanitize a path component (category name) to be filesystem-safe
-fn sanitize_path_component(name: &str) -> String {
-    // Replace invalid characters with underscores
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
-        .collect()
 }

@@ -245,6 +245,11 @@ pub async fn execute() -> Result<()> {
             });
     }
 
+    // Add empty categories from category_tree
+    if let Some(ref category_tree) = docuram_config.category_tree {
+        add_empty_categories_to_tree(&mut tree, category_tree, "");
+    }
+
     // Build hierarchical tree structure
     let tree_structure = build_tree_structure(&tree);
 
@@ -491,29 +496,34 @@ fn print_tree_node(
         if let Some(docs) = tree.get(&node.path) {
             let has_children = !node.children.is_empty();
 
-            for (doc_idx, doc) in docs.iter().enumerate() {
-                let is_last_doc = doc_idx == docs.len() - 1 && !has_children;
-                let doc_prefix = if is_last_doc { "└──" } else { "├──" };
+            if docs.is_empty() && !has_children {
+                // Empty directory with no children
+                println!("{}   {}", node_prefix, style("(empty)").dim().italic());
+            } else {
+                for (doc_idx, doc) in docs.iter().enumerate() {
+                    let is_last_doc = doc_idx == docs.len() - 1 && !has_children;
+                    let doc_prefix = if is_last_doc { "└──" } else { "├──" };
 
-                // Format document line
-                let status_colored = get_status_colored(&doc.status);
-                let version_info = format_version_info(&doc.local_version, &doc.remote_version);
+                    // Format document line
+                    let status_colored = get_status_colored(&doc.status);
+                    let version_info = format_version_info(&doc.local_version, &doc.remote_version);
 
-                // Apply strikethrough to title if pending deletion
-                let title_styled = if doc.status == "Pending deletion" {
-                    style(&doc.title).dim().strikethrough()
-                } else {
-                    style(&doc.title).white()
-                };
+                    // Apply strikethrough to title if pending deletion
+                    let title_styled = if doc.status == "Pending deletion" {
+                        style(&doc.title).dim().strikethrough()
+                    } else {
+                        style(&doc.title).white()
+                    };
 
-                println!("{}{} {} {} {} {}",
-                    node_prefix,
-                    style(doc_prefix).dim(),
-                    style("📄").dim(),
-                    title_styled,
-                    status_colored,
-                    version_info
-                );
+                    println!("{}{} {} {} {} {}",
+                        node_prefix,
+                        style(doc_prefix).dim(),
+                        style("📄").dim(),
+                        title_styled,
+                        status_colored,
+                        version_info
+                    );
+                }
             }
         }
 
@@ -573,4 +583,26 @@ async fn fetch_remote_documents(docuram_config: &DocuramConfig) -> (Result<HashM
         .collect();
 
     (Ok(versions_map), Ok(remote_docs))
+}
+
+/// Recursively add empty categories to the tree
+fn add_empty_categories_to_tree(
+    tree: &mut HashMap<String, Vec<DocumentInfo>>,
+    category: &crate::config::CategoryTree,
+    _parent_path: &str,
+) {
+    // Use the full path from the category tree
+    let current_path = &category.path;
+
+    // If this category has no documents and is not already in the tree, add it as empty
+    if category.document_count == 0 && !tree.contains_key(current_path) {
+        tree.insert(current_path.clone(), Vec::new());
+    }
+
+    // Recursively process subcategories
+    if let Some(ref subcategories) = category.subcategories {
+        for subcat in subcategories {
+            add_empty_categories_to_tree(tree, subcat, "");
+        }
+    }
 }
