@@ -535,8 +535,8 @@ fn remove_empty_directories(dir_path: &Path) -> Result<()> {
     }
 
     // Then try to remove this directory if it's empty
-    // Don't remove the docs/ directory itself
-    if dir_path.file_name() != Some(std::ffi::OsStr::new("docs")) {
+    // Don't remove the docuram/ directory itself
+    if dir_path.file_name() != Some(std::ffi::OsStr::new("docuram")) {
         if let Ok(mut entries) = fs::read_dir(dir_path) {
             if entries.next().is_none() {
                 let _ = fs::remove_dir(dir_path);

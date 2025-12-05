@@ -71,7 +71,7 @@ teamturbo diff
 # 4. Pull latest updates
 teamturbo pull
 
-# 5. Make changes to docs/...
+# 5. Make changes to docuram/...
 
 # 6. Push changes
 teamturbo push -m "Updated documentation"

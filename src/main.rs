@@ -92,7 +92,7 @@ enum Commands {
     },
     /// Delete documents or directories
     Delete {
-        /// Paths to delete (files or directories in docs/)
+        /// Paths to delete (files or directories in docuram/)
         paths: Vec<String>,
         /// Force deletion without confirmation
         #[arg(short, long)]

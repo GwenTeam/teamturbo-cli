@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use dialoguer::Confirm;
 
 use crate::api::ApiClient;
-use crate::api::client::DocumentInfo;
+use crate::api::client::{DocumentInfo, CategoryTree};
 use crate::config::CliConfig;
 use crate::utils::{storage::LocalState, write_file, logger, calculate_checksum};
 
@@ -106,6 +106,16 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
             println!("{}", style("Run 'teamturbo pull' to download documents later.").dim());
             return Ok(());
         }
+    }
+
+    // Create empty category directories from category tree
+    if let Some(ref category_tree) = docuram_config.category_tree {
+        println!("{}", style("Creating category directories...").bold());
+        let created_count = create_category_directories(category_tree, "")?;
+        if created_count > 0 {
+            println!("{}", style(format!("✓ Created {} category director(ies)", created_count)).green());
+        }
+        println!();
     }
 
     println!();
@@ -281,4 +291,47 @@ docuram:
 
     // Prepend metadata to content
     Ok(format!("{}{}", metadata, content))
+}
+
+/// Recursively create empty category directories
+/// Returns the count of directories created
+fn create_category_directories(category: &CategoryTree, parent_path: &str) -> Result<usize> {
+    let mut count = 0;
+
+    // Build category path
+    let category_name = sanitize_path_component(&category.name);
+    let current_path = if parent_path.is_empty() {
+        category_name.clone()
+    } else {
+        format!("{}/{}", parent_path, category_name)
+    };
+
+    // Create directory if it doesn't exist and has no documents
+    let dir_path = PathBuf::from(&current_path);
+    if category.document_count == 0 && !dir_path.exists() {
+        fs::create_dir_all(&dir_path)
+            .with_context(|| format!("Failed to create directory: {:?}", dir_path))?;
+        logger::debug("create_dir", &format!("Created empty category directory: {:?}", dir_path));
+        count += 1;
+    }
+
+    // Recursively create subdirectories
+    if let Some(ref subcategories) = category.subcategories {
+        for subcat in subcategories {
+            count += create_category_directories(subcat, &current_path)?;
+        }
+    }
+
+    Ok(count)
+}
+
+/// Sanitize a path component (category name) to be filesystem-safe
+fn sanitize_path_component(name: &str) -> String {
+    // Replace invalid characters with underscores
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }

@@ -59,8 +59,8 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     let doc_path = std::path::Path::new(&doc_info.path);
                     if let Some(parent) = doc_path.parent() {
                         if let Some(category_path) = parent.to_str() {
-                            // Remove "docs/" prefix to get the actual category path
-                            let category = category_path.strip_prefix("docs/").unwrap_or(category_path);
+                            // Remove "docuram/" prefix to get the actual category path
+                            let category = category_path.strip_prefix("docuram/").unwrap_or(category_path);
                             deleted_doc_categories.push(category.to_string());
                         }
                     }
@@ -141,12 +141,12 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         println!();
     }
 
-    // Scan docs directory for new documents with front matter
-    println!("{}", style("Scanning docs/ directory for new documents...").cyan());
-    let new_docs_with_meta = match scan_documents_with_meta("docs") {
+    // Scan docuram directory for new documents with front matter
+    println!("{}", style("Scanning docuram/ directory for new documents...").cyan());
+    let new_docs_with_meta = match scan_documents_with_meta("docuram") {
         Ok(docs) => docs,
         Err(_) => {
-            println!("{}", style("No docs/ directory found, skipping new document scan").yellow());
+            println!("{}", style("No docuram/ directory found, skipping new document scan").yellow());
             Vec::new()
         }
     };

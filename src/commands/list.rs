@@ -20,8 +20,8 @@ pub async fn execute() -> Result<()> {
     // Try to fetch remote documents and versions
     let (remote_versions, remote_docs) = fetch_remote_documents(&docuram_config).await;
 
-    // Scan docs directory for new local documents with front matter
-    let new_docs_with_meta = match utils::scan_documents_with_meta("docs") {
+    // Scan docuram directory for new local documents with front matter
+    let new_docs_with_meta = match utils::scan_documents_with_meta("docuram") {
         Ok(docs) => {
             // Build a set of file paths from docuram.json for quick lookup
             let docuram_paths: HashSet<String> = docuram_config
@@ -162,7 +162,7 @@ pub async fn execute() -> Result<()> {
 
         let category = if let Some(parent) = file_path.parent() {
             if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docs/").unwrap_or(parent_str).to_string()
+                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
             } else {
                 "Unknown".to_string()
             }
@@ -224,7 +224,7 @@ pub async fn execute() -> Result<()> {
 
         let category = if let Some(parent) = file_path.parent() {
             if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docs/").unwrap_or(parent_str).to_string()
+                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
             } else {
                 "Unknown".to_string()
             }

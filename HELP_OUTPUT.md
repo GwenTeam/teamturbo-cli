@@ -253,7 +253,7 @@ teamturbo whoami
 teamturbo init --from https://example.com/api/v1/docuram/categories/1/generate_config
 
 # 5. 查看下载的文档
-ls -R docs/
+ls -R docuram/
 ```
 
 ### 2. 日常使用
@@ -263,7 +263,7 @@ ls -R docs/
 teamturbo pull
 
 # 编辑文档
-vim docs/技术架构/系统设计.md
+vim docuram/技术架构/系统设计.md
 
 # 查看修改
 teamturbo diff
@@ -282,12 +282,12 @@ teamturbo sync
 
 # 成员 A
 teamturbo pull
-vim docs/api/接口文档.md
+vim docuram/api/接口文档.md
 teamturbo push -m "添加新接口"
 
 # 成员 B（稍后）
 teamturbo pull  # 拉取成员 A 的更新
-vim docs/api/接口文档.md  # 基于最新版本修改
+vim docuram/api/接口文档.md  # 基于最新版本修改
 teamturbo push -m "完善接口说明"
 ```
 

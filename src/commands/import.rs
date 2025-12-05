@@ -360,7 +360,7 @@ async fn import_file_in_place(file_path: &Path) -> Result<()> {
     // Extract title from filename
     let title = extract_title(file_path, &content)?;
 
-    // Derive category from the file's path relative to docs/
+    // Derive category from the file's path relative to docuram/
     let full_category = derive_category_from_path(file_path)?;
 
     // Load docuram.json to check for existing category UUID
@@ -436,8 +436,8 @@ async fn import_file_remote(
         }
     };
 
-    // Determine target file path in docs directory
-    let target_dir = PathBuf::from("docs").join(&full_category);
+    // Determine target file path in docuram directory
+    let target_dir = PathBuf::from("docuram").join(&full_category);
     fs::create_dir_all(&target_dir)?;
 
     let target_file = target_dir.join(format!("{}.md", sanitize_filename(&title)));
@@ -547,18 +547,18 @@ fn extract_uuid_from_frontmatter(content: &str) -> Option<String> {
     None
 }
 
-/// Normalize category path by removing ./docs/ or docs/ prefix and trailing slashes
+/// Normalize category path by removing ./docuram/ or docuram/ prefix and trailing slashes
 fn normalize_category_path(path: &str) -> String {
     let trimmed = path.trim();
 
     let mut result = trimmed;
 
-    // Remove ./docs/ prefix
-    if let Some(stripped) = result.strip_prefix("./docs/") {
+    // Remove ./docuram/ prefix
+    if let Some(stripped) = result.strip_prefix("./docuram/") {
         result = stripped;
     }
-    // Remove docs/ prefix
-    else if let Some(stripped) = result.strip_prefix("docs/") {
+    // Remove docuram/ prefix
+    else if let Some(stripped) = result.strip_prefix("docuram/") {
         result = stripped;
     }
     // Remove ./ prefix
@@ -581,17 +581,17 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Derive category from file path (for in-place conversion)
-/// Expects path to be under docs/ directory
+/// Expects path to be under docuram/ directory
 fn derive_category_from_path(file_path: &Path) -> Result<String> {
     // Get absolute path
     let abs_path = file_path.canonicalize()
         .context("Failed to resolve file path")?;
 
-    // Find the docs/ directory in the path
+    // Find the docuram/ directory in the path
     let mut docs_index = None;
     for (i, component) in abs_path.components().enumerate() {
         if let Some(name) = component.as_os_str().to_str() {
-            if name == "docs" {
+            if name == "docuram" {
                 docs_index = Some(i);
                 break;
             }
@@ -599,19 +599,19 @@ fn derive_category_from_path(file_path: &Path) -> Result<String> {
     }
 
     let docs_idx = docs_index.ok_or_else(|| {
-        anyhow::anyhow!("File must be under a 'docs/' directory for in-place conversion: {}", file_path.display())
+        anyhow::anyhow!("File must be under a 'docuram/' directory for in-place conversion: {}", file_path.display())
     })?;
 
-    // Get path components after docs/
+    // Get path components after docuram/
     let components: Vec<_> = abs_path.components().collect();
 
-    // If file is directly under docs/, use empty category (root)
+    // If file is directly under docuram/, use empty category (root)
     // Otherwise, build category path from directory structure
     if docs_idx + 1 >= components.len() - 1 {
-        // File is directly under docs/ (e.g., docs/file.md)
+        // File is directly under docuram/ (e.g., docuram/file.md)
         Ok(String::new())
     } else {
-        // File is in subdirectory (e.g., docs/category/subcategory/file.md)
+        // File is in subdirectory (e.g., docuram/category/subcategory/file.md)
         let category_parts: Vec<String> = components[docs_idx + 1..components.len() - 1]
             .iter()
             .filter_map(|c| c.as_os_str().to_str())

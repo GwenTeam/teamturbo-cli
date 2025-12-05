@@ -3,10 +3,11 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::fs;
 
 use crate::api::ApiClient;
-use crate::config::{CliConfig, DocuramConfig};
-use crate::utils::{storage::LocalState, write_file, read_file, calculate_checksum, verify_checksum};
+use crate::config::{CliConfig, DocuramConfig, CategoryTree};
+use crate::utils::{storage::LocalState, write_file, read_file, calculate_checksum, logger};
 
 pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
     println!("{}", style("Pull Document Updates").cyan().bold());
@@ -47,6 +48,31 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
         .iter()
         .map(|doc| (doc.uuid.clone(), doc.version))
         .collect();
+
+    // Fetch updated config to get the latest category_tree
+    println!("{}", style("Fetching updated category tree...").dim());
+    let config_url = format!("{}/docuram/categories/{}/generate_config",
+        server_url, category_uuid);
+    let updated_config = client.get_docuram_config(&config_url).await?;
+
+    // Update category_tree in local config if it exists
+    if let Some(ref category_tree) = updated_config.category_tree {
+        // Convert api::client::CategoryTree to config::CategoryTree
+        let config_tree = convert_category_tree(category_tree);
+        docuram_config.category_tree = Some(config_tree.clone());
+
+        // Create empty category directories from updated tree
+        println!("{}", style("Creating category directories...").dim());
+        let created_count = create_category_directories(&config_tree, "")?;
+        if created_count > 0 {
+            println!("{}", style(format!("✓ Created {} new category director(ies)", created_count)).green());
+        }
+
+        // Save updated config with new category_tree
+        docuram_config.save()
+            .context("Failed to save updated docuram.json")?;
+    }
+    println!();
 
     // Check for new documents (not in docuram.json)
     let local_doc_uuids: HashSet<String> = docuram_config
@@ -302,4 +328,66 @@ docuram:
 
     // Prepend metadata to content
     Ok(format!("{}{}", metadata, content))
+}
+
+/// Convert api::client::CategoryTree to config::CategoryTree
+fn convert_category_tree(api_tree: &crate::api::client::CategoryTree) -> CategoryTree {
+    CategoryTree {
+        id: api_tree.id,
+        name: api_tree.name.clone(),
+        slug: api_tree.slug.clone(),
+        path: api_tree.path.clone(),
+        description: api_tree.description.clone(),
+        position: api_tree.position,
+        parent_id: api_tree.parent_id,
+        subcategories: api_tree.subcategories.as_ref().map(|subs| {
+            subs.iter().map(|sub| convert_category_tree(sub)).collect()
+        }),
+        document_count: api_tree.document_count,
+        created_at: api_tree.created_at.clone(),
+        updated_at: api_tree.updated_at.clone(),
+    }
+}
+
+/// Recursively create empty category directories
+/// Returns the count of directories created
+fn create_category_directories(category: &CategoryTree, parent_path: &str) -> Result<usize> {
+    let mut count = 0;
+
+    // Build category path
+    let category_name = sanitize_path_component(&category.name);
+    let current_path = if parent_path.is_empty() {
+        category_name.clone()
+    } else {
+        format!("{}/{}", parent_path, category_name)
+    };
+
+    // Create directory if it doesn't exist and has no documents
+    let dir_path = PathBuf::from(&current_path);
+    if category.document_count == 0 && !dir_path.exists() {
+        fs::create_dir_all(&dir_path)
+            .with_context(|| format!("Failed to create directory: {:?}", dir_path))?;
+        logger::debug("create_dir", &format!("Created empty category directory: {:?}", dir_path));
+        count += 1;
+    }
+
+    // Recursively create subdirectories
+    if let Some(ref subcategories) = category.subcategories {
+        for subcat in subcategories {
+            count += create_category_directories(subcat, &current_path)?;
+        }
+    }
+
+    Ok(count)
+}
+
+/// Sanitize a path component (category name) to be filesystem-safe
+fn sanitize_path_component(name: &str) -> String {
+    // Replace invalid characters with underscores
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }
