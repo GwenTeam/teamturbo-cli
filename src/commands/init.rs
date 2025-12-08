@@ -14,10 +14,11 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     println!("{}", style("Initialize Docuram Project").cyan().bold());
     println!();
 
-    // Check if docuram.json already exists
-    if Path::new("docuram.json").exists() && !force {
+    // Check if docuram/docuram.json already exists
+    let config_path = Path::new("docuram").join("docuram.json");
+    if config_path.exists() && !force {
         anyhow::bail!(
-            "docuram.json already exists. Use --force to overwrite, or run 'teamturbo pull' to update documents."
+            "docuram/docuram.json already exists. Use --force to overwrite, or run 'teamturbo pull' to update documents."
         );
     }
 
@@ -53,12 +54,16 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     println!("Downloading configuration from {}...", style(&config_source).cyan());
     let docuram_config = client.get_docuram_config(&config_source).await?;
 
-    // Save docuram.json
-    println!("Saving {}...", style("docuram.json").cyan());
+    // Ensure docuram directory exists
+    fs::create_dir_all("docuram")
+        .context("Failed to create docuram directory")?;
+
+    // Save docuram/docuram.json
+    println!("Saving {}...", style("docuram/docuram.json").cyan());
     let config_json = serde_json::to_string_pretty(&docuram_config)
         .context("Failed to serialize config")?;
-    fs::write("docuram.json", config_json)
-        .context("Failed to write docuram.json")?;
+    fs::write(&config_path, config_json)
+        .context("Failed to write docuram/docuram.json")?;
 
     println!("{}", style("✓ Configuration saved").green());
     println!();

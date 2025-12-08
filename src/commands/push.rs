@@ -16,7 +16,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
     // Load docuram config
     let docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
     let cli_config = CliConfig::load()?;
@@ -109,7 +109,19 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
             for category_path in unique_categories {
                 // Skip if this is the current working category or its parent
-                if category_path == *current_category_path || current_category_path.starts_with(&format!("{}/", category_path)) {
+                // Use path component comparison to avoid false matches like "docs" matching "docs-backup"
+                let is_current_or_parent = if category_path == *current_category_path {
+                    true
+                } else {
+                    // Check if category_path is a parent of current_category_path
+                    let cat_parts: Vec<&str> = category_path.split('/').filter(|s| !s.is_empty()).collect();
+                    let curr_parts: Vec<&str> = current_category_path.split('/').filter(|s| !s.is_empty()).collect();
+
+                    curr_parts.len() > cat_parts.len() &&
+                    curr_parts[..cat_parts.len()] == cat_parts[..]
+                };
+
+                if is_current_or_parent {
                     continue;
                 }
 

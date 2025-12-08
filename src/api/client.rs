@@ -66,18 +66,25 @@ impl DocuramConfig {
         self.documents.iter().chain(self.requires.iter())
     }
 
-    /// Save to docuram.json
+    /// Save to docuram/docuram.json
     pub fn save(&self) -> Result<()> {
         use std::path::PathBuf;
         use std::fs;
         use anyhow::Context;
 
-        let path = PathBuf::from("docuram.json");
+        let path = PathBuf::from("docuram").join("docuram.json");
+
+        // Ensure docuram directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
+        }
+
         let content = serde_json::to_string_pretty(self)
             .context("Failed to serialize docuram config")?;
 
         fs::write(&path, content)
-            .context("Failed to write docuram.json")?;
+            .context("Failed to write docuram/docuram.json")?;
 
         Ok(())
     }
@@ -391,7 +398,12 @@ impl ApiClient {
                 if logger::is_verbose() {
                     println!("[HTTP] Document Response Body (first 500 chars):");
                     let preview = if body_text.len() > 500 {
-                        format!("{}...", &body_text[..500])
+                        // Use char_indices to find safe UTF-8 boundary
+                        let truncate_pos = body_text.char_indices()
+                            .nth(500)
+                            .map(|(pos, _)| pos)
+                            .unwrap_or(body_text.len());
+                        format!("{}...", &body_text[..truncate_pos])
                     } else {
                         body_text.clone()
                     };

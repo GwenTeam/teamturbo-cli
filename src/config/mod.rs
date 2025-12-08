@@ -195,28 +195,40 @@ pub struct CategoryTree {
 }
 
 impl DocuramConfig {
-    /// Load from docuram.json in current directory
+    /// Get docuram.json path (docuram/docuram.json)
+    pub fn config_path() -> PathBuf {
+        PathBuf::from("docuram").join("docuram.json")
+    }
+
+    /// Load from docuram/docuram.json
     pub fn load() -> Result<Self> {
-        let path = PathBuf::from("docuram.json");
+        let path = Self::config_path();
         if !path.exists() {
-            anyhow::bail!("docuram.json not found in current directory");
+            anyhow::bail!("docuram/docuram.json not found. Run 'teamturbo init' first.");
         }
 
         let content = fs::read_to_string(&path)
-            .context("Failed to read docuram.json")?;
+            .context("Failed to read docuram/docuram.json")?;
 
         serde_json::from_str(&content)
-            .context("Failed to parse docuram.json")
+            .context("Failed to parse docuram/docuram.json")
     }
 
-    /// Save to docuram.json
+    /// Save to docuram/docuram.json
     pub fn save(&self) -> Result<()> {
-        let path = PathBuf::from("docuram.json");
+        let path = Self::config_path();
+
+        // Ensure docuram directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
+        }
+
         let content = serde_json::to_string_pretty(self)
             .context("Failed to serialize docuram config")?;
 
         fs::write(&path, content)
-            .context("Failed to write docuram.json")?;
+            .context("Failed to write docuram/docuram.json")?;
 
         Ok(())
     }

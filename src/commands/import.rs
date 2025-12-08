@@ -15,7 +15,7 @@ pub async fn execute(paths: Vec<String>, from: Option<String>, to: Option<String
 
     // Load docuram config to validate we're in a docuram project
     let _docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
 
     // Determine the import mode
     let import_mode = determine_import_mode(&paths, &from, &to)?;
@@ -440,7 +440,8 @@ async fn import_file_remote(
     let target_dir = PathBuf::from("docuram").join(&full_category);
     fs::create_dir_all(&target_dir)?;
 
-    let target_file = target_dir.join(format!("{}.md", sanitize_filename(&title)));
+    // 标题已经包含 .md 后缀（后端自动添加），不需要再次添加
+    let target_file = target_dir.join(sanitize_filename(&title));
 
     // Check if target file already exists with valid frontmatter
     if target_file.exists() {
@@ -508,7 +509,14 @@ fn extract_title(file_path: &Path, _content: &str) -> Result<String> {
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
 
-    Ok(filename.to_string())
+    // 确保文件名包含 .md 后缀
+    let title = if filename.ends_with(".md") {
+        filename.to_string()
+    } else {
+        format!("{}.md", filename)
+    };
+
+    Ok(title)
 }
 
 /// Extract UUID from frontmatter in content

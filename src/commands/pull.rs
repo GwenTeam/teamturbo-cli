@@ -15,7 +15,7 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
 
     // Load docuram config
     let mut docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
     let cli_config = CliConfig::load()?;

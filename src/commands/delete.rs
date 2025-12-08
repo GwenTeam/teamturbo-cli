@@ -20,7 +20,7 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
 
     // Load docuram config
     let mut docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram.json. Make sure you're in a docuram project directory.")?;
+        .context("Failed to load docuram/docuram.json. Make sure you're in a docuram project directory.")?;
 
     // Load local state
     let mut local_state = LocalState::load().unwrap_or_default();
