@@ -176,6 +176,31 @@ impl DocumentInfo {
     pub fn remote_url(&self, project_url: &str) -> String {
         format!("{}/wiki/documents/{}", project_url, self.uuid)
     }
+
+    /// Generate local file path based on whether this is a dependency
+    /// Required documents (is_required=true) from other categories are placed in dependencies/ subdirectory
+    /// Documents from the working category (even if is_required=true) stay in their original path
+    /// For example: docuram/working-category/dependencies/dep-category/doc.md
+    pub fn local_path(&self, working_category_path: &str) -> String {
+        // Check if this document belongs to the working category or its subcategories
+        // Use exact match or prefix match with path separator to avoid false positives
+        // e.g., "功能文档/测试新文档结构" should match "功能文档/测试新文档结构/requirements"
+        // but NOT "功能文档" (which is a parent category)
+        let is_working_category_doc = self.category_path == working_category_path ||
+                                       self.category_path.starts_with(&format!("{}/", working_category_path));
+
+        if self.is_required && !is_working_category_doc {
+            // Dependency documents from other categories go into working_category/dependencies/
+            let path_without_docuram = self.path.strip_prefix("docuram/").unwrap_or(&self.path);
+            let working_category_normalized = working_category_path.strip_prefix("docuram/").unwrap_or(working_category_path);
+
+            // Place external dependencies under dependencies/
+            format!("docuram/{}/dependencies/{}", working_category_normalized, path_without_docuram)
+        } else {
+            // Main documents and working category documents use path as-is
+            self.path.clone()
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

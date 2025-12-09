@@ -51,7 +51,7 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
 
     // Fetch updated config to get the latest category_tree
     println!("{}", style("Fetching updated category tree...").dim());
-    let config_url = format!("{}/docuram/categories/{}/generate_config",
+    let config_url = format!("{}/api/docuram/categories/{}/generate_config",
         server_url, category_uuid);
     let updated_config = client.get_docuram_config(&config_url).await?;
 
@@ -107,11 +107,15 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
                 version: doc.version,
                 path: doc.path.clone(),
                 checksum: doc.checksum.clone(),
-                is_required: false,
+                is_required: doc.is_required,  // Preserve the is_required flag from server
             };
 
-            // Add document to the documents array
-            docuram_config.documents.push(new_doc_info);
+            // Add document to appropriate array based on is_required flag
+            if new_doc_info.is_required {
+                docuram_config.requires.push(new_doc_info);
+            } else {
+                docuram_config.documents.push(new_doc_info);
+            }
         }
 
         // Save updated docuram config
@@ -148,7 +152,10 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
     let mut conflicts = Vec::new();
 
     for doc_info in &docs_to_pull {
-        let file_path = PathBuf::from(&doc_info.path);
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let working_category_path = &docuram_config.docuram.category_path;
+        let local_file_path = doc_info.local_path(working_category_path);
+        let file_path = PathBuf::from(&local_file_path);
 
         // Check local state
         let local_info = local_state.get_document(&doc_info.uuid);
@@ -229,7 +236,8 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
     for doc_info in to_update {
         pb.set_message(format!("{}", doc_info.title));
 
-        match pull_document(&client, doc_info, &mut local_state).await {
+        let working_category_path = &docuram_config.docuram.category_path;
+        match pull_document(&client, doc_info, &mut local_state, working_category_path).await {
             Ok(_) => {
                 success_count += 1;
             }
@@ -266,6 +274,7 @@ async fn pull_document(
     client: &ApiClient,
     doc_info: &crate::config::DocumentInfo,
     local_state: &mut LocalState,
+    working_category_path: &str,
 ) -> Result<()> {
     // Download document content
     let doc = client.download_document(&doc_info.uuid).await?;
@@ -273,18 +282,20 @@ async fn pull_document(
     // Backend now stores complete content with frontmatter, so no need to add it
     let full_content = doc.content.unwrap_or_default();
 
-    // Write to file
-    let file_path = PathBuf::from(&doc_info.path);
+    // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+    let local_file_path = doc_info.local_path(working_category_path);
+    let file_path = PathBuf::from(&local_file_path);
+
     write_file(&file_path, &full_content)
         .with_context(|| format!("Failed to write document to {:?}", file_path))?;
 
     // Calculate checksum of complete content (including frontmatter)
     let content_checksum = crate::utils::calculate_checksum(&full_content);
 
-    // Update local state
+    // Update local state with the local path
     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
         uuid: doc_info.uuid.clone(),
-        path: doc_info.path.clone(),
+        path: local_file_path,
         checksum: content_checksum,
         version: doc.version,
         last_sync: chrono::Utc::now().to_rfc3339(),

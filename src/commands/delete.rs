@@ -50,6 +50,9 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
         anyhow::bail!("No paths specified.");
     }
 
+    // Get working category path
+    let working_category_path = &docuram_config.docuram.category_path;
+
     // Collect all documents to delete (including documents in directories)
     let mut docs_to_delete = Vec::new();
     let mut files_to_delete = Vec::new();
@@ -57,7 +60,7 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
     for target_path in &target_paths {
         if target_path.is_file() {
             // Single file - find matching document
-            if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path) {
+            if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path, working_category_path) {
                 docs_to_delete.push(doc);
                 files_to_delete.push(target_path.clone());
             } else {
@@ -72,12 +75,13 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
             let (dir_docs, dir_files) = find_documents_in_directory(
                 &docuram_config,
                 &local_state,
-                target_path
+                target_path,
+                working_category_path
             );
 
             if dir_docs.is_empty() {
                 // If still no documents found, try as a single file
-                if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path) {
+                if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path, working_category_path) {
                     docs_to_delete.push(doc);
                     if target_path.exists() {
                         files_to_delete.push(target_path.clone());
@@ -285,15 +289,18 @@ fn find_document_by_path(
     docuram_config: &DocuramConfig,
     local_state: &LocalState,
     file_path: &Path,
+    working_category_path: &str,
 ) -> Option<DocumentToDelete> {
     // Try to match by path in docuram.json (documents and requires)
     for doc in docuram_config.all_documents() {
-        let doc_path = PathBuf::from(&doc.path);
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let local_file_path = doc.local_path(working_category_path);
+        let doc_path = PathBuf::from(&local_file_path);
         if doc_path == file_path || doc_path.canonicalize().ok() == file_path.canonicalize().ok() {
             return Some(DocumentToDelete {
                 uuid: doc.uuid.clone(),
                 title: doc.title.clone(),
-                path: doc.path.clone(),
+                path: local_file_path,  // Store the local path
                 category_uuid: doc.category_uuid.clone(),
                 category_path: doc.category_path.clone(),
             });
@@ -364,6 +371,7 @@ fn find_documents_in_directory(
     docuram_config: &DocuramConfig,
     local_state: &LocalState,
     dir_path: &Path,
+    working_category_path: &str,
 ) -> (Vec<DocumentToDelete>, Vec<PathBuf>) {
     let mut docs = Vec::new();
     let mut files = Vec::new();
@@ -372,7 +380,9 @@ fn find_documents_in_directory(
 
     // Search in docuram.json (documents and requires)
     for doc in docuram_config.all_documents() {
-        let doc_path = PathBuf::from(&doc.path);
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let local_file_path = doc.local_path(working_category_path);
+        let doc_path = PathBuf::from(&local_file_path);
 
         // Try canonical path if file exists, otherwise use the path directly
         let matches_dir = if let (Ok(canonical_doc), Ok(canonical_dir)) = (doc_path.canonicalize(), dir_path.canonicalize()) {
@@ -400,7 +410,7 @@ fn find_documents_in_directory(
                 docs.push(DocumentToDelete {
                     uuid: doc.uuid.clone(),
                     title: doc.title.clone(),
-                    path: doc.path.clone(),
+                    path: local_file_path.clone(),  // Use local path
                     category_uuid: doc.category_uuid.clone(),
                     category_path: doc.category_path.clone(),
                 });
@@ -467,6 +477,7 @@ fn find_documents_in_directory(
                         docuram_config,
                         local_state,
                         &file_path,
+                        working_category_path,
                     );
                     for doc in sub_docs {
                         if seen_uuids.insert(doc.uuid.clone()) {

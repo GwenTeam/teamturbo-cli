@@ -57,7 +57,10 @@ pub async fn execute(document: Option<String>) -> Result<()> {
     let mut up_to_date_count = 0;
 
     for doc_info in &docs_to_check {
-        let file_path = PathBuf::from(&doc_info.path);
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let working_category_path = &docuram_config.docuram.category_path;
+        let local_file_path = doc_info.local_path(working_category_path);
+        let file_path = PathBuf::from(&local_file_path);
 
         if !file_path.exists() {
             println!("{} {} {}",

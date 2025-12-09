@@ -14,6 +14,9 @@ pub async fn execute() -> Result<()> {
     // Load docuram config
     let docuram_config = DocuramConfig::load()?;
 
+    // Get working category path
+    let working_category_path = &docuram_config.docuram.category_path;
+
     // Load local state
     let local_state = LocalState::load()?;
 
@@ -136,15 +139,30 @@ pub async fn execute() -> Result<()> {
     // Build a tree structure grouped by category
     let mut tree: HashMap<String, Vec<DocumentInfo>> = HashMap::new();
 
-    // Group documents by category_path
+    // Group documents by actual file directory path (not category_path)
     for doc in &all_docs {
-        tree.entry(doc.category_path.clone())
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let local_file_path = doc.local_path(working_category_path);
+
+        // Extract directory path from local file path
+        let file_path = Path::new(&local_file_path);
+        let dir_path = if let Some(parent) = file_path.parent() {
+            if let Some(parent_str) = parent.to_str() {
+                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
+            } else {
+                "Unknown".to_string()
+            }
+        } else {
+            "Unknown".to_string()
+        };
+
+        tree.entry(dir_path)
             .or_insert_with(Vec::new)
             .push(DocumentInfo {
                 title: doc.title.clone(),
                 uuid: doc.uuid.clone(),
                 doc_type: doc.doc_type.clone(),
-                status: get_document_status(&doc.uuid, &doc.path, &local_state),
+                status: get_document_status(&doc.uuid, &local_file_path, &local_state),
                 local_version: get_local_version(&doc.uuid, &local_state),
                 remote_version: get_remote_version(&doc.uuid, &remote_versions),
                 source: DocumentSource::Docuram,
@@ -200,7 +218,22 @@ pub async fn execute() -> Result<()> {
 
     // Add remote new documents (on server but not in local docuram.json)
     for remote_doc in &remote_new_docs {
-        tree.entry(remote_doc.category_path.clone())
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let local_file_path = remote_doc.local_path(working_category_path);
+
+        // Extract directory path from local file path
+        let file_path = Path::new(&local_file_path);
+        let dir_path = if let Some(parent) = file_path.parent() {
+            if let Some(parent_str) = parent.to_str() {
+                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
+            } else {
+                "Unknown".to_string()
+            }
+        } else {
+            "Unknown".to_string()
+        };
+
+        tree.entry(dir_path)
             .or_insert_with(Vec::new)
             .push(DocumentInfo {
                 title: remote_doc.title.clone(),

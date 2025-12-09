@@ -146,7 +146,8 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     for doc_info in docuram_config.all_documents() {
         pb.set_message(format!("{}", doc_info.title));
 
-        match download_document(&client, doc_info, &mut local_state).await {
+        let working_category_path = &docuram_config.docuram.category_path;
+        match download_document(&client, doc_info, &mut local_state, working_category_path).await {
             Ok(_) => {
                 success_count += 1;
             }
@@ -229,6 +230,7 @@ async fn download_document(
     client: &ApiClient,
     doc_info: &DocumentInfo,
     local_state: &mut LocalState,
+    working_category_path: &str,
 ) -> Result<()> {
     // Download document content
     logger::debug("download", &format!("Fetching document: {}", doc_info.uuid));
@@ -240,8 +242,10 @@ async fn download_document(
     // Add docuram metadata to content
     content = add_docuram_metadata(&content, doc_info)?;
 
-    // Write to file
-    let file_path = PathBuf::from(&doc_info.path);
+    // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+    let local_file_path = doc_info.local_path(working_category_path);
+    let file_path = PathBuf::from(&local_file_path);
+
     write_file(&file_path, &content)
         .with_context(|| format!("Failed to write document to {:?}", file_path))?;
     logger::debug("download", &format!("Saved to: {:?}", file_path));
@@ -249,10 +253,10 @@ async fn download_document(
     // Calculate checksum of the actual file content (with metadata)
     let actual_checksum = calculate_checksum(&content);
 
-    // Update local state
+    // Update local state with the local path
     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
         uuid: doc_info.uuid.clone(),
-        path: doc_info.path.clone(),
+        path: local_file_path,
         checksum: actual_checksum,
         version: doc_info.version,
         last_sync: chrono::Utc::now().to_rfc3339(),

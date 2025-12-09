@@ -277,7 +277,10 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
     // Check documents from docuram.json
     for doc_info in &docs_to_check {
-        let file_path = PathBuf::from(&doc_info.path);
+        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        let working_category_path = &docuram_config.docuram.category_path;
+        let local_file_path = doc_info.local_path(working_category_path);
+        let file_path = PathBuf::from(&local_file_path);
 
         if !file_path.exists() {
             missing_files.push(doc_info.uuid.clone());
@@ -301,7 +304,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
             to_push.push((
                 doc_info.uuid.clone(),
                 doc_info.title.clone(),
-                doc_info.path.clone(),
+                local_file_path,  // Use the local path we already computed
                 current_content,
                 current_checksum,
             ));
