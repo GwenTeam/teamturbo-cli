@@ -59,6 +59,31 @@ if (-not $ttExists) {
     }
 }
 
+# Save installation metadata for upgrade功能
+$METADATA_DIR = "$env:USERPROFILE\.teamturbo-cli"
+$METADATA_FILE = "$METADATA_DIR\install.json"
+
+if (-not (Test-Path $METADATA_DIR)) {
+    New-Item -ItemType Directory -Path $METADATA_DIR -Force | Out-Null
+}
+
+# Extract base URL from download URL
+$BASE_URL = ([System.Uri]$CLI_URL).GetLeftPart([System.UriPartial]::Authority)
+
+$metadata = @{
+    base_url = $BASE_URL
+    download_url = $CLI_URL
+    install_dir = $INSTALL_DIR
+    install_path = $CLI_PATH
+    tt_path = $TT_PATH
+    os = "Windows"
+    arch = "x86_64"
+    installed_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+} | ConvertTo-Json
+
+$metadata | Out-File -FilePath $METADATA_FILE -Encoding UTF8
+Write-Host "Installation metadata saved to: $METADATA_FILE" -ForegroundColor Green
+
 # Verify installation
 if (Test-Path $CLI_PATH) {
     Write-Host "`nInstallation completed successfully!" -ForegroundColor Green
@@ -67,6 +92,7 @@ if (Test-Path $CLI_PATH) {
     Write-Host "  1. Restart your terminal"
     Write-Host "  2. Run: teamturbo --version"
     Write-Host "  3. Run: teamturbo login"
+    Write-Host "  4. Run: teamturbo upgrade (to check for updates)"
 } else {
     Write-Host "`nInstallation failed: CLI executable not found" -ForegroundColor Red
     exit 1

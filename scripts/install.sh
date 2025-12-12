@@ -169,6 +169,29 @@ if [ -n "$SHELL_RC" ]; then
     fi
 fi
 
+# Save installation metadata for upgrade功能
+METADATA_DIR="$HOME/.teamturbo-cli"
+METADATA_FILE="$METADATA_DIR/install.json"
+
+mkdir -p "$METADATA_DIR"
+
+# Extract base URL from download URL
+BASE_URL=$(echo "$DOWNLOAD_URL" | sed -E 's|(https?://[^/]+).*|\1|')
+
+cat > "$METADATA_FILE" << EOF
+{
+  "base_url": "$BASE_URL",
+  "download_url": "$DOWNLOAD_URL",
+  "install_dir": "$INSTALL_DIR",
+  "install_path": "$CLI_PATH",
+  "os": "$OS",
+  "arch": "$ARCH",
+  "installed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+
+echo "Installation metadata saved to: $METADATA_FILE"
+
 # Verify installation
 if [ -f "$CLI_PATH" ]; then
     echo ""
@@ -180,6 +203,7 @@ if [ -f "$CLI_PATH" ]; then
     echo "     Or restart your terminal"
     echo "  2. Run: teamturbo --version"
     echo "  3. Run: teamturbo login"
+    echo "  4. Run: teamturbo upgrade (to check for updates)"
 else
     echo "Installation failed: teamturbo-cli executable not found"
     exit 1

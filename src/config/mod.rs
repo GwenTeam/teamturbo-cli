@@ -219,6 +219,42 @@ pub struct CategoryTree {
     pub updated_at: Option<String>,
 }
 
+/// Installation metadata for CLI upgrades
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstallMetadata {
+    pub base_url: String,
+    pub download_url: String,
+    pub install_dir: String,
+    pub install_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tt_path: Option<String>,
+    pub os: String,
+    pub arch: String,
+    pub installed_at: String,
+}
+
+impl InstallMetadata {
+    /// Get install metadata file path: ~/.teamturbo-cli/install.json
+    pub fn metadata_path() -> Result<PathBuf> {
+        let home = dirs::home_dir().context("Failed to get home directory")?;
+        Ok(home.join(".teamturbo-cli").join("install.json"))
+    }
+
+    /// Load install metadata from file
+    pub fn load() -> Result<Self> {
+        let path = Self::metadata_path()?;
+        if !path.exists() {
+            anyhow::bail!("Installation metadata not found. Please reinstall using the installation script.");
+        }
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read install metadata: {:?}", path))?;
+
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse install metadata: {:?}", path))
+    }
+}
+
 impl DocuramConfig {
     /// Get docuram.json path (docuram/docuram.json)
     pub fn config_path() -> PathBuf {

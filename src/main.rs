@@ -98,6 +98,8 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Upgrade teamturbo CLI to the latest version
+    Upgrade,
 }
 
 #[tokio::main]
@@ -140,6 +142,9 @@ async fn main() -> Result<()> {
         }
         Commands::Delete { paths, force } => {
             commands::delete::execute(paths, force, cli.verbose).await?;
+        }
+        Commands::Upgrade => {
+            commands::upgrade::execute().await?;
         }
     }
 
