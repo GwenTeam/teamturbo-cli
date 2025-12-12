@@ -116,7 +116,21 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     // Create empty category directories from category tree
     if let Some(ref category_tree) = docuram_config.category_tree {
         println!("{}", style("Creating category directories...").bold());
-        let created_count = create_category_directories(category_tree, "docuram")?;
+        let mut created_count = create_category_directories(category_tree, "docuram")?;
+
+        // Create dependencies directory if there are dependency documents
+        if !docuram_config.requires.is_empty() {
+            let dependencies_path = format!("docuram/{}/dependencies",
+                docuram_config.docuram.category_path.strip_prefix("docuram/").unwrap_or(&docuram_config.docuram.category_path));
+            let dep_path = PathBuf::from(&dependencies_path);
+            if !dep_path.exists() {
+                fs::create_dir_all(&dep_path)
+                    .context("Failed to create dependencies directory")?;
+                logger::debug("create_dir", &format!("Created dependencies directory: {:?}", dep_path));
+                created_count += 1;
+            }
+        }
+
         if created_count > 0 {
             println!("{}", style(format!("✓ Created {} category director(ies)", created_count)).green());
         }

@@ -193,9 +193,15 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         .collect();
 
     // Filter: new documents are those NOT in docuram.json AND NOT in state.json
+    // Also exclude documents in dependencies/ directory (they are read-only)
     let new_docs: Vec<_> = new_docs_with_meta
         .into_iter()
         .filter(|d| {
+            // Exclude documents in dependencies/ directory
+            if d.file_path.contains("/dependencies/") {
+                return false;
+            }
+
             // Check if file path is in docuram.json or state.json
             let in_docuram_by_path = docuram_paths.contains(&d.file_path);
             let in_state_by_path = state_paths.contains(&d.file_path);
@@ -275,7 +281,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
     let mut to_push: Vec<(String, String, String, String, String)> = Vec::new();
     let mut missing_files = Vec::new();
 
-    // Check documents from docuram.json
+    // Check documents from docuram.json (only 'documents', not 'requires')
     for doc_info in &docs_to_check {
         // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
         let working_category_path = &docuram_config.docuram.category_path;
