@@ -9,4 +9,5 @@ pub mod diff;
 pub mod list;
 pub mod import;
 pub mod delete;
+pub mod feedback;
 pub mod upgrade;

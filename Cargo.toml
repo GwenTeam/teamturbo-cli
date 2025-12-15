@@ -1,6 +1,6 @@
 [package]
 name = "teamturbo-cli"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["TeamTurbo Team"]
 description = "TeamTurbo CLI for Docuram document management"
@@ -29,6 +29,7 @@ uuid = { version = "1.6", features = ["v4"] }
 colored = "2.1"
 flate2 = "1.0"
 zip = "0.6"
+regex = "1.10"
 
 [[bin]]
 name = "teamturbo"

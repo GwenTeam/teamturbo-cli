@@ -98,6 +98,15 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Send feedback to document authors or category creators
+    Feedback {
+        /// Document or category UUIDs
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Feedback message content
+        #[arg(short, long)]
+        message: String,
+    },
     /// Upgrade teamturbo CLI to the latest version
     Upgrade,
 }
@@ -142,6 +151,9 @@ async fn main() -> Result<()> {
         }
         Commands::Delete { paths, force } => {
             commands::delete::execute(paths, force, cli.verbose).await?;
+        }
+        Commands::Feedback { targets, message } => {
+            commands::feedback::execute(targets, message, cli.verbose).await?;
         }
         Commands::Upgrade => {
             commands::upgrade::execute().await?;

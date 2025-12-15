@@ -38,3 +38,6 @@ rust-project.json
 
 # Clippy 和其他工具可能生成的文件
 clippy.toml
+
+docuram
+.docuram

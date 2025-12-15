@@ -855,4 +855,119 @@ impl ApiClient {
 
         Ok(category_docs)
     }
+
+    /// Send feedback to document authors or category creators
+    pub async fn send_feedback(
+        &self,
+        target_uuids: Vec<String>,
+        message: String,
+    ) -> Result<FeedbackResponse> {
+        let url = format!("{}/api/docuram/feedback", self.base_url);
+
+        // Detect target type (document or category)
+        let target_type = self.detect_target_type(&target_uuids[0]).await?;
+
+        let request_body = FeedbackRequest {
+            target_type: target_type.to_string(),
+            target_uuids,
+            message,
+        };
+
+        logger::debug("send_feedback", &format!("Sending feedback to {}", url));
+        logger::http_request("POST", &url);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&request_body)
+            .send()
+            .await
+            .context("Failed to send feedback request")?;
+
+        let status = response.status().as_u16();
+        logger::http_response(status, &url);
+
+        match response.status() {
+            StatusCode::OK => {
+                let feedback_response = response.json::<FeedbackResponse>().await
+                    .context("Failed to parse feedback response")?;
+                Ok(feedback_response)
+            }
+            StatusCode::BAD_REQUEST => {
+                let error_text = response.text().await.unwrap_or_default();
+                anyhow::bail!("Invalid input: {}", error_text)
+            }
+            StatusCode::UNAUTHORIZED => {
+                anyhow::bail!("Authentication required. Run 'teamturbo login' first.")
+            }
+            StatusCode::NOT_FOUND => {
+                anyhow::bail!("Document or category not found. Please verify the UUID is correct.")
+            }
+            StatusCode::UNPROCESSABLE_ENTITY => {
+                let error_text = response.text().await.unwrap_or_default();
+                anyhow::bail!("No recipients found: {}", error_text)
+            }
+            status => {
+                let error_text = response.text().await.unwrap_or_default();
+                anyhow::bail!("Server error (HTTP {}): {}", status, error_text)
+            }
+        }
+    }
+
+    /// Detect whether UUID is a document or category
+    async fn detect_target_type(&self, uuid: &str) -> Result<&'static str> {
+        // Try to fetch as document first
+        let doc_url = format!("{}/api/docuram/documents/{}", self.base_url, uuid);
+        let doc_response = self
+            .client
+            .get(&doc_url)
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+
+        if doc_response.status().is_success() {
+            return Ok("document");
+        }
+
+        // Try as category
+        let cat_url = format!("{}/api/docuram/categories/{}", self.base_url, uuid);
+        let cat_response = self
+            .client
+            .get(&cat_url)
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+
+        if cat_response.status().is_success() {
+            return Ok("category");
+        }
+
+        anyhow::bail!("UUID not found as document or category: {}", uuid)
+    }
+}
+
+/// Feedback request structure
+#[derive(Debug, Serialize)]
+pub struct FeedbackRequest {
+    pub target_type: String,
+    pub target_uuids: Vec<String>,
+    pub message: String,
+}
+
+/// Feedback response structure
+#[derive(Debug, Deserialize)]
+pub struct FeedbackResponse {
+    pub success: bool,
+    pub recipients: Vec<Recipient>,
+    pub message_count: usize,
+}
+
+/// Recipient information
+#[derive(Debug, Deserialize)]
+pub struct Recipient {
+    pub user_id: i64,
+    pub user_name: String,
+    pub email: String,
+    pub status: String,
 }
