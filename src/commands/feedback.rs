@@ -194,3 +194,5 @@ mod tests {
         assert!(validate_inputs(&targets, &message).is_ok());
     }
 }
+
+

@@ -109,6 +109,15 @@ enum Commands {
     },
     /// Upgrade teamturbo CLI to the latest version
     Upgrade,
+    /// Add a new organic document (req or bug)
+    Add {
+        /// Document type: 'req' for requirement or 'bug' for bug report
+        #[arg(value_name = "TYPE")]
+        doc_type: String,
+        /// Document title (optional)
+        #[arg(short, long)]
+        title: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -157,6 +166,17 @@ async fn main() -> Result<()> {
         }
         Commands::Upgrade => {
             commands::upgrade::execute().await?;
+        }
+        Commands::Add { doc_type, title } => {
+            let dtype = match doc_type.to_lowercase().as_str() {
+                "req" => commands::add::DocType::Req,
+                "bug" => commands::add::DocType::Bug,
+                _ => {
+                    eprintln!("Error: Invalid document type '{}'. Use 'req' or 'bug'.", doc_type);
+                    std::process::exit(1);
+                }
+            };
+            commands::add::execute(dtype, title).await?;
         }
     }
 

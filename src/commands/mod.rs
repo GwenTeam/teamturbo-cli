@@ -11,3 +11,4 @@ pub mod import;
 pub mod delete;
 pub mod feedback;
 pub mod upgrade;
+pub mod add;
