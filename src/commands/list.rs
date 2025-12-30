@@ -76,7 +76,6 @@ pub async fn execute() -> Result<()> {
 
     // Print project info
     println!("{}", style(format!("Project: {} ({})", docuram_config.project.name, docuram_config.project.url)).bold());
-    println!("{}: {}", style("Docuram").dim(), docuram_config.docuram.category_path);
     println!();
 
     // Collect all documents with their status
@@ -278,9 +277,14 @@ pub async fn execute() -> Result<()> {
             });
     }
 
-    // Add empty categories from category_tree
-    if let Some(ref category_tree) = docuram_config.category_tree {
-        add_empty_categories_to_tree(&mut tree, category_tree, "");
+    // No longer add empty categories from category_tree
+    // We only show document type directories (organic, impl, dependencies) with actual content
+
+    // Ensure standard directories are always shown (organic, impl, req) even if empty
+    for standard_dir in ["organic", "impl", "req"] {
+        if !tree.contains_key(standard_dir) {
+            tree.insert(standard_dir.to_string(), Vec::new());
+        }
     }
 
     // Build hierarchical tree structure
@@ -618,24 +622,27 @@ async fn fetch_remote_documents(docuram_config: &DocuramConfig) -> (Result<HashM
     (Ok(versions_map), Ok(remote_docs))
 }
 
-/// Recursively add empty categories to the tree
-fn add_empty_categories_to_tree(
-    tree: &mut HashMap<String, Vec<DocumentInfo>>,
-    category: &crate::config::CategoryTree,
-    _parent_path: &str,
-) {
-    // Use the full path from the category tree
-    let current_path = &category.path;
-
-    // If this category has no documents and is not already in the tree, add it as empty
-    if category.document_count == 0 && !tree.contains_key(current_path) {
-        tree.insert(current_path.clone(), Vec::new());
-    }
-
-    // Recursively process subcategories
-    if let Some(ref subcategories) = category.subcategories {
-        for subcat in subcategories {
-            add_empty_categories_to_tree(tree, subcat, "");
-        }
-    }
-}
+// Function removed - no longer needed with the new flat document type structure
+// We only show directories that actually contain documents
+//
+// /// Recursively add empty categories to the tree
+// fn add_empty_categories_to_tree(
+//     tree: &mut HashMap<String, Vec<DocumentInfo>>,
+//     category: &crate::config::CategoryTree,
+//     _parent_path: &str,
+// ) {
+//     // Use the full path from the category tree
+//     let current_path = &category.path;
+//
+//     // If this category has no documents and is not already in the tree, add it as empty
+//     if category.document_count == 0 && !tree.contains_key(current_path) {
+//         tree.insert(current_path.clone(), Vec::new());
+//     }
+//
+//     // Recursively process subcategories
+//     if let Some(ref subcategories) = category.subcategories {
+//         for subcat in subcategories {
+//             add_empty_categories_to_tree(tree, subcat, "");
+//         }
+//     }
+// }

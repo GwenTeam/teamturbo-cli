@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::fs;
 
 use crate::api::ApiClient;
-use crate::config::{CliConfig, DocuramConfig, CategoryTree};
+use crate::config::{CliConfig, DocuramConfig};
 use crate::utils::{storage::LocalState, write_file, read_file, calculate_checksum, logger};
 
 pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
@@ -49,28 +49,36 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
         .map(|doc| (doc.uuid.clone(), doc.version))
         .collect();
 
-    // Fetch updated config to get the latest category_tree
-    println!("{}", style("Fetching updated category tree...").dim());
-    let config_url = format!("{}/api/docuram/categories/{}/generate_config",
-        server_url, category_uuid);
-    let updated_config = client.get_docuram_config(&config_url).await?;
+    // Ensure document type directories exist
+    println!("{}", style("Ensuring document type directories exist...").dim());
+    let mut created_count = 0;
 
-    // Update category_tree in local config if it exists
-    if let Some(ref category_tree) = updated_config.category_tree {
-        // Convert api::client::CategoryTree to config::CategoryTree
-        let config_tree = convert_category_tree(category_tree);
-        docuram_config.category_tree = Some(config_tree.clone());
+    let organic_path = PathBuf::from("docuram/organic");
+    if !organic_path.exists() {
+        fs::create_dir_all(&organic_path)
+            .context("Failed to create organic directory")?;
+        logger::debug("create_dir", &format!("Created directory: {:?}", organic_path));
+        created_count += 1;
+    }
 
-        // Create empty category directories from updated tree
-        println!("{}", style("Creating category directories...").dim());
-        let created_count = create_category_directories(&config_tree, "docuram")?;
-        if created_count > 0 {
-            println!("{}", style(format!("✓ Created {} new category director(ies)", created_count)).green());
-        }
+    let impl_path = PathBuf::from("docuram/impl");
+    if !impl_path.exists() {
+        fs::create_dir_all(&impl_path)
+            .context("Failed to create impl directory")?;
+        logger::debug("create_dir", &format!("Created directory: {:?}", impl_path));
+        created_count += 1;
+    }
 
-        // Save updated config with new category_tree
-        docuram_config.save()
-            .context("Failed to save updated docuram.json")?;
+    let dependencies_path = PathBuf::from("docuram/dependencies");
+    if !dependencies_path.exists() {
+        fs::create_dir_all(&dependencies_path)
+            .context("Failed to create dependencies directory")?;
+        logger::debug("create_dir", &format!("Created dependencies directory: {:?}", dependencies_path));
+        created_count += 1;
+    }
+
+    if created_count > 0 {
+        println!("{}", style(format!("✓ Created {} director(ies)", created_count)).green());
     }
     println!();
 
@@ -341,52 +349,3 @@ docuram:
     Ok(format!("{}{}", metadata, content))
 }
 
-/// Convert api::client::CategoryTree to config::CategoryTree
-fn convert_category_tree(api_tree: &crate::api::client::CategoryTree) -> CategoryTree {
-    CategoryTree {
-        id: api_tree.id,
-        name: api_tree.name.clone(),
-        slug: api_tree.slug.clone(),
-        path: api_tree.path.clone(),
-        description: api_tree.description.clone(),
-        position: api_tree.position,
-        parent_id: api_tree.parent_id,
-        subcategories: api_tree.subcategories.as_ref().map(|subs| {
-            subs.iter().map(|sub| convert_category_tree(sub)).collect()
-        }),
-        document_count: api_tree.document_count,
-        created_at: api_tree.created_at.clone(),
-        updated_at: api_tree.updated_at.clone(),
-    }
-}
-
-/// Recursively create empty category directories
-/// Returns the count of directories created
-fn create_category_directories(category: &CategoryTree, root_path: &str) -> Result<usize> {
-    let mut count = 0;
-
-    // Use the category's full path and prepend root_path (e.g., "docuram")
-    let full_path = if root_path.is_empty() {
-        category.path.clone()
-    } else {
-        format!("{}/{}", root_path, category.path)
-    };
-
-    // Create directory if it doesn't exist and has no documents
-    let dir_path = PathBuf::from(&full_path);
-    if category.document_count == 0 && !dir_path.exists() {
-        fs::create_dir_all(&dir_path)
-            .with_context(|| format!("Failed to create directory: {:?}", dir_path))?;
-        logger::debug("create_dir", &format!("Created empty category directory: {:?}", dir_path));
-        count += 1;
-    }
-
-    // Recursively create subdirectories
-    if let Some(ref subcategories) = category.subcategories {
-        for subcat in subcategories {
-            count += create_category_directories(subcat, root_path)?;
-        }
-    }
-
-    Ok(count)
-}

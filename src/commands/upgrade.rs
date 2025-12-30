@@ -8,7 +8,7 @@ use crate::config::InstallMetadata;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Execute upgrade command
-pub async fn execute() -> Result<()> {
+pub async fn execute(force: bool) -> Result<()> {
     println!("{}", "Checking for updates...".cyan());
 
     // Load install metadata
@@ -85,15 +85,19 @@ pub async fn execute() -> Result<()> {
         .green()
     );
 
-    // Ask for confirmation
-    println!("\n{}", "Do you want to upgrade? (y/N): ".cyan());
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
+    // Ask for confirmation unless force flag is set
+    if !force {
+        println!("\n{}", "Do you want to upgrade? (y/N): ".cyan());
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
 
-    if input != "y" && input != "yes" {
-        println!("{}", "Upgrade cancelled.".yellow());
-        return Ok(());
+        if input != "y" && input != "yes" {
+            println!("{}", "Upgrade cancelled.".yellow());
+            return Ok(());
+        }
+    } else {
+        println!("{}", "\nForce upgrade mode: skipping confirmation.".yellow());
     }
 
     println!("{}", "Downloading new version...".cyan());

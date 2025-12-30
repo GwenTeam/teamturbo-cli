@@ -1,0 +1,455 @@
+use anyhow::{Context, Result};
+use console::style;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::collections::{HashSet, HashMap};
+use serde_yaml;
+
+use crate::config::DocuramConfig;
+use crate::utils::{logger, calculate_checksum};
+
+#[derive(Debug, Clone)]
+struct ValidationIssue {
+    level: IssueLevel,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum IssueLevel {
+    Error,
+    Warning,
+}
+
+pub async fn execute() -> Result<()> {
+    println!("{}", style("Verifying Docuram Project Structure").cyan().bold());
+    println!();
+
+    let mut issues: Vec<ValidationIssue> = Vec::new();
+
+    // Check if docuram directory exists
+    let docuram_path = Path::new("docuram");
+    if !docuram_path.exists() {
+        anyhow::bail!("docuram directory not found. Run 'teamturbo init' first.");
+    }
+
+    // Load docuram configuration
+    let config_path = docuram_path.join("docuram.json");
+    if !config_path.exists() {
+        anyhow::bail!("docuram/docuram.json not found. Run 'teamturbo init' first.");
+    }
+
+    let docuram_config = DocuramConfig::load()
+        .context("Failed to load docuram.json")?;
+
+    logger::debug("verify", "Loaded docuram.json");
+
+    // 1. Verify category path structure
+    println!("{}", style("Checking category path structure...").bold());
+    verify_category_path_structure(docuram_path, &docuram_config, &mut issues)?;
+
+    // 2. Verify top-level directory structure
+    println!("{}", style("Checking directory structure...").bold());
+    verify_directory_structure(docuram_path, &docuram_config, &mut issues)?;
+
+    // 3. Verify req directory contents
+    println!("{}", style("Checking req directory...").bold());
+    verify_req_directory(docuram_path, &docuram_config, &mut issues)?;
+
+    // 4. Verify dependencies directory (should only contain pulled documents)
+    println!("{}", style("Checking dependencies directory...").bold());
+    verify_dependencies_directory(docuram_path, &docuram_config, &mut issues)?;
+
+    // 5. Verify document integrity (front matter, checksums)
+    println!("{}", style("Checking document integrity...").bold());
+    verify_document_integrity(docuram_path, &docuram_config, &mut issues)?;
+
+    // 6. Verify all documents in config exist on disk
+    println!("{}", style("Checking document existence...").bold());
+    verify_documents_exist(docuram_path, &docuram_config, &mut issues)?;
+
+    println!();
+
+    // Report results
+    let errors: Vec<_> = issues.iter().filter(|i| i.level == IssueLevel::Error).collect();
+    let warnings: Vec<_> = issues.iter().filter(|i| i.level == IssueLevel::Warning).collect();
+
+    let error_count = errors.len();
+    let warning_count = warnings.len();
+
+    if !errors.is_empty() {
+        println!("{}", style(format!("Found {} error(s):", error_count)).red().bold());
+        for issue in &errors {
+            println!("  {} {}", style("✗").red(), issue.message);
+        }
+        println!();
+    }
+
+    if !warnings.is_empty() {
+        println!("{}", style(format!("Found {} warning(s):", warning_count)).yellow().bold());
+        for issue in &warnings {
+            println!("  {} {}", style("⚠").yellow(), issue.message);
+        }
+        println!();
+    }
+
+    if issues.is_empty() {
+        println!("{}", style("✓ All checks passed! Docuram structure is valid.").green().bold());
+        Ok(())
+    } else if error_count == 0 {
+        println!("{}", style("✓ Verification completed with warnings.").yellow().bold());
+        Ok(())
+    } else {
+        anyhow::bail!("Verification failed with {} error(s)", error_count);
+    }
+}
+
+fn verify_category_path_structure(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    // Get the category path from config
+    let category_path = &docuram_config.docuram.category_path;
+    let expected_base = docuram_path.join(category_path);
+
+    // Check if the category path directory exists
+    if !expected_base.exists() {
+        issues.push(ValidationIssue {
+            level: IssueLevel::Error,
+            message: format!(
+                "Category path directory 'docuram/{}' does not exist. Expected based on docuram.category_path.",
+                category_path
+            ),
+        });
+        return Ok(());
+    }
+
+    // Verify all documents are under the correct category path
+    let all_docs: Vec<_> = docuram_config.documents.iter()
+        .chain(docuram_config.requires.iter())
+        .collect();
+
+    for doc in all_docs {
+        let doc_path = Path::new(&doc.path);
+
+        // Document path should start with "docuram/{category_path}/"
+        let expected_prefix = format!("docuram/{}/", category_path);
+
+        if !doc.path.starts_with(&expected_prefix) {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!(
+                    "Document '{}' is not under the expected category path 'docuram/{}/'",
+                    doc.path, category_path
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_directory_structure(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    let category_path = &docuram_config.docuram.category_path;
+    let base_path = docuram_path.join(category_path);
+
+    if !base_path.exists() {
+        // Already reported in verify_category_path_structure
+        return Ok(());
+    }
+
+    let allowed_dirs = vec!["dependencies", "impl", "organic", "req"];
+    let allowed_files = vec!["README.md"];
+
+    let entries = fs::read_dir(&base_path)
+        .with_context(|| format!("Failed to read directory: {}", base_path.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy().to_string();
+        let path = entry.path();
+
+        if path.is_dir() {
+            if !allowed_dirs.contains(&name.as_str()) {
+                let relative_path = path.strip_prefix(docuram_path)
+                    .unwrap_or(&path);
+                issues.push(ValidationIssue {
+                    level: IssueLevel::Error,
+                    message: format!(
+                        "Unexpected directory '{}' in {}. Only {:?} are allowed.",
+                        name, relative_path.parent().unwrap_or(Path::new("")).display(), allowed_dirs
+                    ),
+                });
+            }
+        } else if path.is_file() {
+            if !allowed_files.contains(&name.as_str()) {
+                let relative_path = path.strip_prefix(docuram_path)
+                    .unwrap_or(&path);
+                issues.push(ValidationIssue {
+                    level: IssueLevel::Error,
+                    message: format!(
+                        "Unexpected file '{}' in {}. Only {:?} are allowed.",
+                        name, relative_path.parent().unwrap_or(Path::new("")).display(), allowed_files
+                    ),
+                });
+            }
+        }
+    }
+
+    // Check that all required directories exist
+    for dir in &allowed_dirs {
+        let dir_path = base_path.join(dir);
+        if !dir_path.exists() {
+            let relative_path = dir_path.strip_prefix(docuram_path)
+                .unwrap_or(&dir_path);
+            issues.push(ValidationIssue {
+                level: IssueLevel::Warning,
+                message: format!("Required directory '{}' is missing.", relative_path.display()),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_req_directory(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    let category_path = &docuram_config.docuram.category_path;
+    let req_path = docuram_path.join(category_path).join("req");
+
+    if !req_path.exists() {
+        // Already warned in directory structure check
+        return Ok(());
+    }
+
+    let required_files = vec!["README.md", "UPDATED_LOG.md"];
+
+    for file in &required_files {
+        let file_path = req_path.join(file);
+        if !file_path.exists() {
+            let relative_path = file_path.strip_prefix(docuram_path)
+                .unwrap_or(&file_path);
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!("Required file '{}' is missing.", relative_path.display()),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_dependencies_directory(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    let category_path = &docuram_config.docuram.category_path;
+    let dep_path = docuram_path.join(category_path).join("dependencies");
+
+    if !dep_path.exists() {
+        // Already warned in directory structure check
+        return Ok(());
+    }
+
+    // Get all files in dependencies directory recursively
+    let dep_files = collect_all_files(&dep_path)?;
+
+    // Get all required document paths from config
+    let required_paths: HashSet<PathBuf> = docuram_config.requires.iter()
+        .map(|doc| Path::new(&doc.path).to_path_buf())
+        .collect();
+
+    // Check if any file in dependencies is not in the required list
+    for file_path in &dep_files {
+        let relative_path = file_path.strip_prefix(docuram_path)
+            .unwrap_or(file_path);
+        let path_str = relative_path.to_string_lossy().to_string();
+
+        if !required_paths.iter().any(|p| p.to_string_lossy() == path_str) {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!(
+                    "File '{}' in dependencies/ is not a server-pulled dependency. Dependencies should only contain documents pulled from the server.",
+                    relative_path.display()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_document_integrity(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    // Combine all documents (working + dependencies)
+    let all_docs: Vec<_> = docuram_config.documents.iter()
+        .chain(docuram_config.requires.iter())
+        .collect();
+
+    for doc in all_docs {
+        let doc_path = docuram_path.join(&doc.path);
+
+        if !doc_path.exists() {
+            // Will be caught in verify_documents_exist
+            continue;
+        }
+
+        // Read file content
+        let content = match fs::read_to_string(&doc_path) {
+            Ok(c) => c,
+            Err(e) => {
+                issues.push(ValidationIssue {
+                    level: IssueLevel::Error,
+                    message: format!("Failed to read '{}': {}", doc.path, e),
+                });
+                continue;
+            }
+        };
+
+        // Check for front matter
+        if !content.starts_with("---\n") {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!("Document '{}' is missing YAML front matter.", doc.path),
+            });
+            continue;
+        }
+
+        // Parse front matter
+        let parts: Vec<&str> = content.splitn(3, "---\n").collect();
+        if parts.len() < 3 {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!("Document '{}' has invalid front matter format.", doc.path),
+            });
+            continue;
+        }
+
+        let front_matter = parts[1];
+        let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(front_matter);
+
+        match parsed {
+            Ok(yaml) => {
+                // Check required front matter fields
+                let required_fields = vec!["schema", "uuid", "category", "title", "doc_type"];
+
+                if let Some(docuram_section) = yaml.get("docuram") {
+                    for field in &required_fields {
+                        if docuram_section.get(field).is_none() {
+                            issues.push(ValidationIssue {
+                                level: IssueLevel::Error,
+                                message: format!(
+                                    "Document '{}' is missing required field '{}' in front matter.",
+                                    doc.path, field
+                                ),
+                            });
+                        }
+                    }
+
+                    // Verify UUID matches
+                    if let Some(uuid) = docuram_section.get("uuid").and_then(|v| v.as_str()) {
+                        if uuid != doc.uuid {
+                            issues.push(ValidationIssue {
+                                level: IssueLevel::Warning,
+                                message: format!(
+                                    "Document '{}' has mismatched UUID. Front matter: '{}', Config: '{}'",
+                                    doc.path, uuid, doc.uuid
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    issues.push(ValidationIssue {
+                        level: IssueLevel::Error,
+                        message: format!("Document '{}' is missing 'docuram' section in front matter.", doc.path),
+                    });
+                }
+            }
+            Err(e) => {
+                issues.push(ValidationIssue {
+                    level: IssueLevel::Error,
+                    message: format!("Document '{}' has invalid YAML front matter: {}", doc.path, e),
+                });
+            }
+        }
+
+        // Verify checksum
+        let calculated_checksum = calculate_checksum(&content);
+        if calculated_checksum != doc.checksum {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Warning,
+                message: format!(
+                    "Document '{}' has checksum mismatch. File may have been modified.",
+                    doc.path
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_documents_exist(
+    docuram_path: &Path,
+    docuram_config: &DocuramConfig,
+    issues: &mut Vec<ValidationIssue>
+) -> Result<()> {
+    // Check working documents
+    for doc in &docuram_config.documents {
+        let doc_path = docuram_path.join(&doc.path);
+        if !doc_path.exists() {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Error,
+                message: format!("Working document '{}' referenced in config but not found on disk.", doc.path),
+            });
+        }
+    }
+
+    // Check dependency documents
+    for doc in &docuram_config.requires {
+        let doc_path = docuram_path.join(&doc.path);
+        if !doc_path.exists() {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Warning,
+                message: format!("Dependency document '{}' referenced in config but not found on disk. Run 'teamturbo pull' to download.", doc.path),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_all_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+
+    if !dir.exists() {
+        return Ok(files);
+    }
+
+    let entries = fs::read_dir(dir)?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            files.push(path);
+        } else if path.is_dir() {
+            files.extend(collect_all_files(&path)?);
+        }
+    }
+
+    Ok(files)
+}

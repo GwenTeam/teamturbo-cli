@@ -108,7 +108,11 @@ enum Commands {
         message: String,
     },
     /// Upgrade teamturbo CLI to the latest version
-    Upgrade,
+    Upgrade {
+        /// Force upgrade without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Add a new organic document (req or bug)
     Add {
         /// Document type: 'req' for requirement or 'bug' for bug report
@@ -118,6 +122,8 @@ enum Commands {
         #[arg(short, long)]
         title: Option<String>,
     },
+    /// Verify docuram project structure and document integrity
+    Verify,
 }
 
 #[tokio::main]
@@ -164,8 +170,8 @@ async fn main() -> Result<()> {
         Commands::Feedback { targets, message } => {
             commands::feedback::execute(targets, message, cli.verbose).await?;
         }
-        Commands::Upgrade => {
-            commands::upgrade::execute().await?;
+        Commands::Upgrade { force } => {
+            commands::upgrade::execute(force).await?;
         }
         Commands::Add { doc_type, title } => {
             let dtype = match doc_type.to_lowercase().as_str() {
@@ -177,6 +183,9 @@ async fn main() -> Result<()> {
                 }
             };
             commands::add::execute(dtype, title).await?;
+        }
+        Commands::Verify => {
+            commands::verify::execute().await?;
         }
     }
 

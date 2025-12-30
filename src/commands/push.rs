@@ -48,22 +48,11 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
         let mut deleted_count = 0;
         let mut failed_deletions = Vec::new();
-        let mut deleted_doc_categories = Vec::new();
 
         for doc_info in &pending_deletions {
             match client.delete_document(&doc_info.uuid).await {
                 Ok(_) => {
                     println!("  {} Deleted from server: {}", style("✓").green(), doc_info.path);
-
-                    // Extract category path from document path
-                    let doc_path = std::path::Path::new(&doc_info.path);
-                    if let Some(parent) = doc_path.parent() {
-                        if let Some(category_path) = parent.to_str() {
-                            // Remove "docuram/" prefix to get the actual category path
-                            let category = category_path.strip_prefix("docuram/").unwrap_or(category_path);
-                            deleted_doc_categories.push(category.to_string());
-                        }
-                    }
 
                     // Remove from state.json after successful deletion
                     local_state.remove_document(&doc_info.uuid);
@@ -84,70 +73,6 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         println!("{}", style(format!("✓ {} document(s) deleted from server", deleted_count)).green().bold());
         if !failed_deletions.is_empty() {
             println!("{}", style(format!("✗ {} deletion(s) failed", failed_deletions.len())).red());
-        }
-
-        // Now check and delete empty categories
-        if !deleted_doc_categories.is_empty() {
-            println!();
-            println!("{}", style("Checking for empty categories to delete...").cyan());
-
-            // Get the current working category path from docuram.json to avoid deleting it
-            let current_category_path = &docuram_config.docuram.category_path;
-
-            // Get unique category paths and sort by depth (deepest first)
-            let mut unique_categories: Vec<String> = deleted_doc_categories.into_iter()
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            unique_categories.sort_by(|a, b| {
-                let depth_a = a.matches('/').count();
-                let depth_b = b.matches('/').count();
-                depth_b.cmp(&depth_a) // Sort deepest first
-            });
-
-            let mut deleted_categories = 0;
-
-            for category_path in unique_categories {
-                // Skip if this is the current working category or its parent
-                // Use path component comparison to avoid false matches like "docs" matching "docs-backup"
-                let is_current_or_parent = if category_path == *current_category_path {
-                    true
-                } else {
-                    // Check if category_path is a parent of current_category_path
-                    let cat_parts: Vec<&str> = category_path.split('/').filter(|s| !s.is_empty()).collect();
-                    let curr_parts: Vec<&str> = current_category_path.split('/').filter(|s| !s.is_empty()).collect();
-
-                    curr_parts.len() > cat_parts.len() &&
-                    curr_parts[..cat_parts.len()] == cat_parts[..]
-                };
-
-                if is_current_or_parent {
-                    continue;
-                }
-
-                // Try to delete category - server will reject if not empty
-                if let Ok(Some(category_uuid)) = client.get_category_uuid_by_path(&category_path).await {
-                    match client.delete_category(&category_uuid).await {
-                        Ok(_) => {
-                            println!("  {} Deleted empty category: {}", style("✓").green(), category_path);
-                            deleted_categories += 1;
-                        }
-                        Err(e) => {
-                            // Silently skip errors - category might not be empty or already deleted
-                            // Only show error if it's not a "not empty" or "not found" error
-                            let error_msg = e.to_string();
-                            if !error_msg.contains("not empty") && !error_msg.contains("not found") && !error_msg.contains("Not found") {
-                                println!("  {} Failed to delete category {}: {}",
-                                    style("⚠").yellow(), category_path, e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if deleted_categories > 0 {
-                println!("{}", style(format!("✓ {} empty categor(ies) deleted", deleted_categories)).green().bold());
-            }
         }
 
         println!();

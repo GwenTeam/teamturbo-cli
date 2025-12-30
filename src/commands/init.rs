@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use dialoguer::Confirm;
 
 use crate::api::ApiClient;
-use crate::api::client::{DocumentInfo, CategoryTree};
+use crate::api::client::DocumentInfo;
 use crate::config::CliConfig;
 use crate::utils::{storage::LocalState, write_file, logger, calculate_checksum};
 
@@ -113,29 +113,43 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
         }
     }
 
-    // Create empty category directories from category tree
-    if let Some(ref category_tree) = docuram_config.category_tree {
-        println!("{}", style("Creating category directories...").bold());
-        let mut created_count = create_category_directories(category_tree, "docuram")?;
+    // Create docuram subdirectories based on document types
+    println!("{}", style("Creating document type directories...").bold());
+    let mut created_count = 0;
 
-        // Create dependencies directory if there are dependency documents
-        if !docuram_config.requires.is_empty() {
-            let dependencies_path = format!("docuram/{}/dependencies",
-                docuram_config.docuram.category_path.strip_prefix("docuram/").unwrap_or(&docuram_config.docuram.category_path));
-            let dep_path = PathBuf::from(&dependencies_path);
-            if !dep_path.exists() {
-                fs::create_dir_all(&dep_path)
-                    .context("Failed to create dependencies directory")?;
-                logger::debug("create_dir", &format!("Created dependencies directory: {:?}", dep_path));
-                created_count += 1;
-            }
-        }
-
-        if created_count > 0 {
-            println!("{}", style(format!("✓ Created {} category director(ies)", created_count)).green());
-        }
-        println!();
+    // Create organic directory for knowledge, requirement, bug docs
+    let organic_path = PathBuf::from("docuram/organic");
+    if !organic_path.exists() {
+        fs::create_dir_all(&organic_path)
+            .context("Failed to create organic directory")?;
+        logger::debug("create_dir", &format!("Created directory: {:?}", organic_path));
+        created_count += 1;
     }
+
+    // Create impl directory for implementation, design, test docs
+    let impl_path = PathBuf::from("docuram/impl");
+    if !impl_path.exists() {
+        fs::create_dir_all(&impl_path)
+            .context("Failed to create impl directory")?;
+        logger::debug("create_dir", &format!("Created directory: {:?}", impl_path));
+        created_count += 1;
+    }
+
+    // Create dependencies directory if there are dependency documents
+    if !docuram_config.requires.is_empty() {
+        let dependencies_path = PathBuf::from("docuram/dependencies");
+        if !dependencies_path.exists() {
+            fs::create_dir_all(&dependencies_path)
+                .context("Failed to create dependencies directory")?;
+            logger::debug("create_dir", &format!("Created dependencies directory: {:?}", dependencies_path));
+            created_count += 1;
+        }
+    }
+
+    if created_count > 0 {
+        println!("{}", style(format!("✓ Created {} director(ies)", created_count)).green());
+    }
+    println!();
 
     println!();
     println!("{}", style("Downloading documents...").bold());
@@ -316,33 +330,3 @@ docuram:
     Ok(format!("{}{}", metadata, content))
 }
 
-/// Recursively create empty category directories
-/// Returns the count of directories created
-fn create_category_directories(category: &CategoryTree, root_path: &str) -> Result<usize> {
-    let mut count = 0;
-
-    // Use the category's full path and prepend root_path (e.g., "docuram")
-    let full_path = if root_path.is_empty() {
-        category.path.clone()
-    } else {
-        format!("{}/{}", root_path, category.path)
-    };
-
-    // Create directory if it doesn't exist and has no documents
-    let dir_path = PathBuf::from(&full_path);
-    if category.document_count == 0 && !dir_path.exists() {
-        fs::create_dir_all(&dir_path)
-            .with_context(|| format!("Failed to create directory: {:?}", dir_path))?;
-        logger::debug("create_dir", &format!("Created empty category directory: {:?}", dir_path));
-        count += 1;
-    }
-
-    // Recursively create subdirectories
-    if let Some(ref subcategories) = category.subcategories {
-        for subcat in subcategories {
-            count += create_category_directories(subcat, root_path)?;
-        }
-    }
-
-    Ok(count)
-}

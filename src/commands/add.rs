@@ -3,7 +3,6 @@ use console::style;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 use crate::config::DocuramConfig;
 use crate::utils::{update_front_matter, FrontMatter};
@@ -40,20 +39,30 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
     let docuram_config = DocuramConfig::load()
         .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
 
-    // Find the organics directory
-    let organics_path = find_organics_directory()?;
+    // Use the organic directory directly under docuram/
+    let organic_path = PathBuf::from("docuram/organic");
 
-    // Determine the category path for organics (base category + /organics)
-    let category_path = format!("{}/organics", docuram_config.docuram.category_path);
+    // Create organic directory if it doesn't exist
+    if !organic_path.exists() {
+        fs::create_dir_all(&organic_path)
+            .context("Failed to create docuram/organic directory")?;
+        println!("{} Created organic directory: {}",
+            style("ℹ").blue().bold(),
+            style(organic_path.display()).dim()
+        );
+    }
+
+    // Use the working category path from docuram config
+    let category_path = docuram_config.docuram.category_path.clone();
 
     // Get the next available number for this document type
-    let next_num = get_next_document_number(&organics_path, doc_type)?;
+    let next_num = get_next_document_number(&organic_path, doc_type)?;
 
     // Generate filename
     let filename = generate_filename(doc_type, next_num, title.as_deref());
 
     // Generate file path
-    let file_path = organics_path.join(&filename);
+    let file_path = organic_path.join(&filename);
 
     // Check if file already exists
     if file_path.exists() {
@@ -95,50 +104,14 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Find the organics directory in the docuram project
-fn find_organics_directory() -> Result<PathBuf> {
-    let current_dir = std::env::current_dir()?;
-    let docuram_path = current_dir.join("docuram");
-
-    if !docuram_path.exists() {
-        anyhow::bail!("docuram/ directory not found. Run 'teamturbo init' first.");
-    }
-
-    // Search for organics directory
-    let mut organics_path: Option<PathBuf> = None;
-
-    for entry in WalkDir::new(&docuram_path)
-        .max_depth(5)  // Reasonable depth limit
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_dir() && entry.file_name() == "organics" {
-            organics_path = Some(entry.path().to_path_buf());
-            break;
-        }
-    }
-
-    match organics_path {
-        Some(path) => {
-            println!("{} Found organics directory: {}", 
-                style("ℹ").blue().bold(),
-                style(path.strip_prefix(&current_dir).unwrap_or(&path).display()).dim()
-            );
-            Ok(path)
-        }
-        None => {
-            anyhow::bail!("No 'organics' directory found in docuram/. Please create one first.");
-        }
-    }
-}
 
 /// Get the next available document number for the given type
-fn get_next_document_number(organics_path: &Path, doc_type: DocType) -> Result<usize> {
+fn get_next_document_number(organic_path: &Path, doc_type: DocType) -> Result<usize> {
     let prefix = doc_type.prefix();
     let mut max_num = 0;
 
-    // Read all files in organics directory
-    if let Ok(entries) = fs::read_dir(organics_path) {
+    // Read all files in organic directory
+    if let Ok(entries) = fs::read_dir(organic_path) {
         for entry in entries.filter_map(|e| e.ok()) {
             if let Some(filename) = entry.file_name().to_str() {
                 // Check if filename starts with the prefix (e.g., "req" or "bug")
@@ -219,4 +192,5 @@ mod tests {
         assert!(content.contains("# 测试标题"));
     }
 }
+
 

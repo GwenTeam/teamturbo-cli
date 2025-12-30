@@ -166,28 +166,50 @@ impl DocumentInfo {
         format!("{}/wiki/documents/{}", project_url, self.uuid)
     }
 
-    /// Generate local file path based on whether this is a dependency
-    /// Required documents (is_required=true) from other categories are placed in dependencies/ subdirectory
-    /// Documents from the working category (even if is_required=true) stay in their original path
-    /// For example: docuram/working-category/dependencies/dep-category/doc.md
+    /// Generate local file path based on document type
+    /// Documents are organized by type (organic, impl, etc.) directly under docuram/
+    /// Preserves the subdirectory structure within each type directory
+    /// For example: docuram/organic/subdir/doc.md, docuram/impl/feature/doc.md
+    /// Dependencies are placed in docuram/dependencies/ with their category structure
     pub fn local_path(&self, working_category_path: &str) -> String {
+        // Extract the relative path after "docuram/" from the original path
+        let path_without_docuram = self.path.strip_prefix("docuram/").unwrap_or(&self.path);
+
+        // Remove the category path prefix to get the relative file path
+        // For example: "功能文档/测试新文档结构/subdir/doc.md" -> "subdir/doc.md"
+        let relative_path = if path_without_docuram.starts_with(&self.category_path) {
+            // Remove category path prefix
+            let after_category = path_without_docuram.strip_prefix(&self.category_path)
+                .unwrap_or(path_without_docuram);
+            // Remove leading slash if present
+            after_category.strip_prefix('/').unwrap_or(after_category)
+        } else {
+            // If path doesn't start with category_path, just use the filename
+            path_without_docuram.rsplit('/').next().unwrap_or(path_without_docuram)
+        };
+
         // Check if this document belongs to the working category or its subcategories
-        // Use exact match or prefix match with path separator to avoid false positives
-        // e.g., "功能文档/测试新文档结构" should match "功能文档/测试新文档结构/requirements"
-        // but NOT "功能文档" (which is a parent category)
         let is_working_category_doc = self.category_path == working_category_path ||
                                        self.category_path.starts_with(&format!("{}/", working_category_path));
 
         if self.is_required && !is_working_category_doc {
-            // Dependency documents from other categories go into working_category/dependencies/
-            let path_without_docuram = self.path.strip_prefix("docuram/").unwrap_or(&self.path);
-            let working_category_normalized = working_category_path.strip_prefix("docuram/").unwrap_or(working_category_path);
-
-            // Place external dependencies under dependencies/
-            format!("docuram/{}/dependencies/{}", working_category_normalized, path_without_docuram)
+            // Dependency documents from other categories go into docuram/dependencies/
+            // Preserve the original category structure
+            format!("docuram/dependencies/{}/{}", self.category_path, relative_path)
         } else {
-            // Main documents and working category documents use path as-is
-            self.path.clone()
+            // Main documents are organized by doc_type directly under docuram/
+            // Map doc_type to subdirectory (e.g., "knowledge" -> "organic")
+            let subdir = match self.doc_type.as_str() {
+                "knowledge" => "organic",
+                "requirement" => "organic",
+                "bug" => "organic",
+                "implementation" => "impl",
+                "design" => "impl",
+                "test" => "impl",
+                _ => "organic", // Default to organic for unknown types
+            };
+
+            format!("docuram/{}/{}", subdir, relative_path)
         }
     }
 }
@@ -197,7 +219,6 @@ pub struct CategoryDependency {
     pub category_id: i64,
     pub category_name: String,
     pub category_path: String,
-    pub dependency_type: String,
     pub document_count: i64,
 }
 
