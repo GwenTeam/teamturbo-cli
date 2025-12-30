@@ -52,8 +52,9 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
         );
     }
 
-    // Use the working category path from docuram config
-    let category_path = docuram_config.docuram.category_path.clone();
+    // Use the working category path from docuram config and append /organic
+    let working_category_path = docuram_config.docuram.category_path.clone();
+    let organic_category_path = format!("{}/organic", working_category_path);
 
     // Get the next available number for this document type
     let next_num = get_next_document_number(&organic_path, doc_type)?;
@@ -75,7 +76,7 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
     // Create front matter
     let front_matter = FrontMatter {
         schema: "TEAMTURBO DOCURAM DOCUMENT".to_string(),
-        category: category_path,
+        category: organic_category_path,
         title: filename.clone(),
         slug: None,
         description: Some("Created by add command".to_string()),

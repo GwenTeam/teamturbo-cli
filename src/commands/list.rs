@@ -202,7 +202,15 @@ pub async fn execute() -> Result<()> {
 
     // Add new local documents
     for new_doc in &new_docs_with_meta {
-        tree.entry(new_doc.front_matter.category.clone())
+        // Extract just the document type directory (organic, impl, req, dependencies) from category path
+        // For example: "项目/测试/organic" -> "organic"
+        let dir_path = new_doc.front_matter.category
+            .split('/')
+            .last()
+            .unwrap_or(&new_doc.front_matter.category)
+            .to_string();
+
+        tree.entry(dir_path)
             .or_insert_with(Vec::new)
             .push(DocumentInfo {
                 title: new_doc.front_matter.title.clone(),

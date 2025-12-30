@@ -379,20 +379,37 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                 .progress_chars("=> ")
         );
 
+        // Get working category path from docuram config
+        let working_category_path = &docuram_config.docuram.category_path;
+
         for new_doc in new_docs {
             pb_new.set_message(format!("{}", new_doc.front_matter.title));
 
+            // Infer correct category path based on file location
+            // If the file is in docuram/organic/, docuram/impl/, or docuram/req/,
+            // we need to ensure the category is set to <working_category>/<subdir>
+            let category_path = if new_doc.file_path.starts_with("docuram/organic/") {
+                format!("{}/organic", working_category_path)
+            } else if new_doc.file_path.starts_with("docuram/impl/") {
+                format!("{}/impl", working_category_path)
+            } else if new_doc.file_path.starts_with("docuram/req/") {
+                format!("{}/req", working_category_path)
+            } else {
+                // For other paths, use the category from front matter
+                new_doc.front_matter.category.clone()
+            };
+
             // Get or create category by path
-            let category_id = match client.get_category_by_path(&new_doc.front_matter.category).await {
+            let category_id = match client.get_category_by_path(&category_path).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
                     // Category doesn't exist, create it automatically
-                    match client.ensure_category_by_path(&new_doc.front_matter.category).await {
+                    match client.ensure_category_by_path(&category_path).await {
                         Ok(id) => id,
                         Err(e) => {
                             failed_new_docs.push((
                                 new_doc.front_matter.title.clone(),
-                                format!("Failed to create category '{}': {}", new_doc.front_matter.category, e),
+                                format!("Failed to create category '{}': {}", category_path, e),
                             ));
                             pb_new.inc(1);
                             continue;
