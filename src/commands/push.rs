@@ -386,7 +386,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
             pb_new.set_message(format!("{}", new_doc.front_matter.title));
 
             // Infer correct category path based on file location
-            // If the file is in docuram/organic/, docuram/impl/, or docuram/req/,
+            // If the file is in docuram/organic/, docuram/impl/, docuram/req/, or docuram/manual/,
             // we need to ensure the category is set to <working_category>/<subdir>
             let category_path = if new_doc.file_path.starts_with("docuram/organic/") {
                 format!("{}/organic", working_category_path)
@@ -394,6 +394,8 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                 format!("{}/impl", working_category_path)
             } else if new_doc.file_path.starts_with("docuram/req/") {
                 format!("{}/req", working_category_path)
+            } else if new_doc.file_path.starts_with("docuram/manual/") {
+                format!("{}/manual", working_category_path)
             } else {
                 // For other paths, use the category from front matter
                 new_doc.front_matter.category.clone()

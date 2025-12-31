@@ -107,3 +107,6 @@ echo ""
 echo "✓ SHA256 checksums saved to $BUILD_DIR/SHA256SUMS.txt"
 echo ""
 echo "Done! Upload these files to your release server or GitHub Releases."
+
+scp target/release-builds/*.gz raisethink@10.99.100.9:/home/raisethink/teamturbo-cli/download/
+

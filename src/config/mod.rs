@@ -206,6 +206,7 @@ impl DocumentInfo {
                 "implementation" => "impl",
                 "design" => "impl",
                 "test" => "impl",
+                "framework" | "standard" | "spec" | "api" | "troubleshooting" => "manual",
                 _ => "organic", // Default to organic for unknown types
             };
 

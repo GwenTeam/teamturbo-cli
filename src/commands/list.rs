@@ -288,8 +288,8 @@ pub async fn execute() -> Result<()> {
     // No longer add empty categories from category_tree
     // We only show document type directories (organic, impl, dependencies) with actual content
 
-    // Ensure standard directories are always shown (organic, impl, req) even if empty
-    for standard_dir in ["organic", "impl", "req"] {
+    // Ensure standard directories are always shown (organic, impl, req, manual) even if empty
+    for standard_dir in ["organic", "impl", "req", "manual"] {
         if !tree.contains_key(standard_dir) {
             tree.insert(standard_dir.to_string(), Vec::new());
         }
