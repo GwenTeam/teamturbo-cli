@@ -60,3 +60,6 @@ Write-Host ""
 Write-Host "✓ SHA256 checksums saved to $checksumFile" -ForegroundColor Green
 Write-Host ""
 Write-Host "Done! Upload these files to your release server or GitHub Releases." -ForegroundColor Green
+
+echo "Uploading to server..."
+scp target/release-builds/*.zip raisethink@10.99.100.9:/home/raisethink/teamturbo-cli/download/
