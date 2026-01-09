@@ -387,17 +387,28 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
             // Infer correct category path based on file location
             // If the file is in docuram/organic/, docuram/impl/, docuram/req/, or docuram/manual/,
-            // we need to ensure the category is set to <working_category>/<subdir>
-            let category_path = if new_doc.file_path.starts_with("docuram/organic/") {
-                format!("{}/organic", working_category_path)
-            } else if new_doc.file_path.starts_with("docuram/impl/") {
-                format!("{}/impl", working_category_path)
-            } else if new_doc.file_path.starts_with("docuram/req/") {
-                format!("{}/req", working_category_path)
-            } else if new_doc.file_path.starts_with("docuram/manual/") {
-                format!("{}/manual", working_category_path)
+            // we need to ensure the category is set to <working_category>/<subdir> and preserve subdirectories
+            let category_path = if let Some(stripped) = new_doc.file_path.strip_prefix("docuram/") {
+                // Extract the directory path (without the filename)
+                let path = std::path::Path::new(stripped);
+                if let Some(parent) = path.parent() {
+                    let parent_str = parent.to_string_lossy();
+                    if parent_str.starts_with("organic") ||
+                       parent_str.starts_with("impl") ||
+                       parent_str.starts_with("req") ||
+                       parent_str.starts_with("manual") {
+                        // Standard docuram directory, prepend working category path
+                        format!("{}/{}", working_category_path, parent_str)
+                    } else {
+                        // Other directory, use category from front matter
+                        new_doc.front_matter.category.clone()
+                    }
+                } else {
+                    // File at root of docuram/, use category from front matter
+                    new_doc.front_matter.category.clone()
+                }
             } else {
-                // For other paths, use the category from front matter
+                // Not in docuram/ directory, use category from front matter
                 new_doc.front_matter.category.clone()
             };
 

@@ -113,26 +113,26 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
         }
     }
 
-    // Create docuram subdirectories based on document types
-    println!("{}", style("Creating document type directories...").bold());
+    // Create standard docuram subdirectories
+    println!("{}", style("Creating standard directories...").bold());
     let mut created_count = 0;
 
-    // Create organic directory for knowledge, requirement, bug docs
-    let organic_path = PathBuf::from("docuram/organic");
-    if !organic_path.exists() {
-        fs::create_dir_all(&organic_path)
-            .context("Failed to create organic directory")?;
-        logger::debug("create_dir", &format!("Created directory: {:?}", organic_path));
-        created_count += 1;
-    }
+    // Standard subdirectories (organic, req, impl, manual)
+    let standard_dirs = vec![
+        ("organic", "User-maintained natural language documents (req*.md, bug*.md)"),
+        ("req", "AI Agent and user-maintained extended requirement documents"),
+        ("impl", "Implementation documents for each development iteration"),
+        ("manual", "User manuals and operation guides"),
+    ];
 
-    // Create impl directory for implementation, design, test docs
-    let impl_path = PathBuf::from("docuram/impl");
-    if !impl_path.exists() {
-        fs::create_dir_all(&impl_path)
-            .context("Failed to create impl directory")?;
-        logger::debug("create_dir", &format!("Created directory: {:?}", impl_path));
-        created_count += 1;
+    for (dir_name, _description) in &standard_dirs {
+        let dir_path = PathBuf::from("docuram").join(dir_name);
+        if !dir_path.exists() {
+            fs::create_dir_all(&dir_path)
+                .with_context(|| format!("Failed to create {} directory", dir_name))?;
+            logger::debug("create_dir", &format!("Created directory: {:?}", dir_path));
+            created_count += 1;
+        }
     }
 
     // Create dependencies directory if there are dependency documents

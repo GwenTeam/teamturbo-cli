@@ -202,13 +202,17 @@ pub async fn execute() -> Result<()> {
 
     // Add new local documents
     for new_doc in &new_docs_with_meta {
-        // Extract just the document type directory (organic, impl, req, dependencies) from category path
-        // For example: "项目/测试/organic" -> "organic"
-        let dir_path = new_doc.front_matter.category
-            .split('/')
-            .last()
-            .unwrap_or(&new_doc.front_matter.category)
-            .to_string();
+        // Extract directory path from the actual file path
+        let file_path = Path::new(&new_doc.file_path);
+        let dir_path = if let Some(parent) = file_path.parent() {
+            if let Some(parent_str) = parent.to_str() {
+                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
+            } else {
+                "Unknown".to_string()
+            }
+        } else {
+            "Unknown".to_string()
+        };
 
         tree.entry(dir_path)
             .or_insert_with(Vec::new)
