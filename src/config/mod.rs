@@ -197,20 +197,32 @@ impl DocumentInfo {
             // Preserve the original category structure
             format!("docuram/dependencies/{}/{}", self.category_path, relative_path)
         } else {
-            // Main documents are organized by doc_type directly under docuram/
-            // Map doc_type to subdirectory (e.g., "knowledge" -> "organic")
-            let subdir = match self.doc_type.as_str() {
-                "knowledge" => "organic",
-                "requirement" => "organic",
-                "bug" => "organic",
-                "implementation" => "impl",
-                "design" => "impl",
-                "test" => "impl",
-                "framework" | "standard" | "spec" | "api" | "troubleshooting" => "manual",
-                _ => "organic", // Default to organic for unknown types
-            };
+            // Main documents preserve the subdirectory structure from category_path
+            // Extract subdirectory path after working_category_path
+            if self.category_path.starts_with(&format!("{}/", working_category_path)) {
+                // Has subdirectories under working category
+                // E.g., "测试子分类生成/req/001-milestone" with working "测试子分类生成"
+                // Should extract "req/001-milestone"
+                let subdir_path = self.category_path
+                    .strip_prefix(&format!("{}/", working_category_path))
+                    .unwrap_or("");
 
-            format!("docuram/{}/{}", subdir, relative_path)
+                format!("docuram/{}/{}", subdir_path, relative_path)
+            } else {
+                // Document is directly in working category, use doc_type mapping
+                let subdir = match self.doc_type.as_str() {
+                    "knowledge" => "organic",
+                    "requirement" => "organic",
+                    "bug" => "organic",
+                    "implementation" => "impl",
+                    "design" => "impl",
+                    "test" => "impl",
+                    "framework" | "standard" | "spec" | "api" | "troubleshooting" => "manual",
+                    _ => "organic", // Default to organic for unknown types
+                };
+
+                format!("docuram/{}/{}", subdir, relative_path)
+            }
         }
     }
 }
