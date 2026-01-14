@@ -166,7 +166,7 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
         let file_path = PathBuf::from(&local_file_path);
 
         // Check local state
-        let local_info = local_state.get_document(&doc_info.uuid);
+        let local_info = local_state.get_document_by_uuid(&doc_info.uuid);
 
         if file_path.exists() {
             // File exists, check if it has been modified locally
@@ -287,26 +287,33 @@ async fn pull_document(
     // Download document content
     let doc = client.download_document(&doc_info.uuid).await?;
 
-    // Backend now stores complete content with frontmatter, so no need to add it
-    let full_content = doc.content.unwrap_or_default();
+    // Get pure content without frontmatter
+    let content = doc.content.unwrap_or_default();
 
     // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
     let local_file_path = doc_info.local_path(working_category_path);
     let file_path = PathBuf::from(&local_file_path);
 
-    write_file(&file_path, &full_content)
+    write_file(&file_path, &content)
         .with_context(|| format!("Failed to write document to {:?}", file_path))?;
 
-    // Calculate checksum of complete content (including frontmatter)
-    let content_checksum = crate::utils::calculate_checksum(&full_content);
+    // Calculate checksum of pure content (without frontmatter)
+    let content_checksum = crate::utils::calculate_checksum(&content);
 
-    // Update local state with the local path
+    // Update local state with complete metadata
     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
         uuid: doc_info.uuid.clone(),
         path: local_file_path,
         checksum: content_checksum,
         version: doc.version,
         last_sync: chrono::Utc::now().to_rfc3339(),
+        title: doc_info.title.clone(),
+        category_path: doc_info.category_path.clone(),
+        category_uuid: doc_info.category_uuid.clone(),
+        doc_type: doc_info.doc_type.clone(),
+        description: None,
+        priority: None,
+        is_required: doc_info.is_required,
         pending_deletion: false,
     });
 

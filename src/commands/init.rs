@@ -264,11 +264,8 @@ async fn download_document(
     logger::debug("download", &format!("Fetching document: {}", doc_info.uuid));
     let doc = client.download_document(&doc_info.uuid).await?;
 
-    let mut content = doc.content.unwrap_or_default();
+    let content = doc.content.unwrap_or_default();
     logger::debug("download", &format!("Document size: {} bytes", content.len()));
-
-    // Add docuram metadata to content
-    content = add_docuram_metadata(&content, doc_info)?;
 
     // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
     let local_file_path = doc_info.local_path(working_category_path);
@@ -278,55 +275,25 @@ async fn download_document(
         .with_context(|| format!("Failed to write document to {:?}", file_path))?;
     logger::debug("download", &format!("Saved to: {:?}", file_path));
 
-    // Calculate checksum of the actual file content (with metadata)
+    // Calculate checksum of the actual file content (without metadata)
     let actual_checksum = calculate_checksum(&content);
 
-    // Update local state with the local path
+    // Update local state with complete metadata
     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
         uuid: doc_info.uuid.clone(),
         path: local_file_path,
         checksum: actual_checksum,
         version: doc_info.version,
         last_sync: chrono::Utc::now().to_rfc3339(),
+        title: doc_info.title.clone(),
+        category_path: doc_info.category_path.clone(),
+        category_uuid: doc_info.category_uuid.clone(),
+        doc_type: doc_info.doc_type.clone(),
+        description: None,
+        priority: None,
+        is_required: doc_info.is_required,
         pending_deletion: false,
     });
 
     Ok(())
 }
-
-/// Add docuram metadata to document content
-fn add_docuram_metadata(content: &str, doc_info: &DocumentInfo) -> Result<String> {
-    // Check if metadata already exists
-    if content.starts_with("---\ndocuram:") || content.starts_with("---\r\ndocuram:") {
-        logger::debug("metadata", "Document already has docuram metadata, skipping");
-        return Ok(content.to_string());
-    }
-
-    // Build metadata frontmatter
-    let metadata = format!(
-        r#"---
-docuram:
-  schema: "TEAMTURBO DOCURAM DOCUMENT"
-  uuid: "{}"
-  title: "{}"
-  category: "{}"
-  category_uuid: "{}"
-  doc_type: "{}"
-  version: {}
-  synced_at: "{}"
----
-
-"#,
-        doc_info.uuid,
-        doc_info.title.replace('"', "\\\""),
-        doc_info.category_path.replace('"', "\\\""),
-        doc_info.category_uuid,
-        doc_info.doc_type,
-        doc_info.version,
-        chrono::Utc::now().to_rfc3339()
-    );
-
-    // Prepend metadata to content
-    Ok(format!("{}{}", metadata, content))
-}
-

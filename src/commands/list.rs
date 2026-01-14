@@ -46,11 +46,11 @@ pub async fn execute() -> Result<()> {
                 .collect();
 
             // Build a set of UUIDs from state.json
-            let state_uuids: HashSet<String> = local_state
-                .documents
-                .keys()
-                .cloned()
-                .collect();
+    let state_uuids: HashSet<String> = local_state
+        .documents
+        .values()
+        .map(|doc_info| doc_info.uuid.clone())
+        .collect();
 
             // Filter: new documents are those NOT in docuram.json AND NOT in state.json
             docs.into_iter()
@@ -86,8 +86,8 @@ pub async fn execute() -> Result<()> {
     let mut state_only_docs = Vec::new();
     let mut pending_deletion_docs = Vec::new();
 
-    for (uuid, doc_info) in &local_state.documents {
-        let in_docuram = all_docs.iter().any(|d| d.uuid == *uuid);
+    for doc_info in local_state.documents.values() {
+        let in_docuram = all_docs.iter().any(|d| d.uuid == doc_info.uuid);
 
         if doc_info.pending_deletion {
             // Collect pending deletion documents separately
@@ -115,7 +115,7 @@ pub async fn execute() -> Result<()> {
             }
 
             // Skip if marked for deletion in state.json
-            if let Some(state_doc) = local_state.get_document(&remote_doc.uuid) {
+            if let Some(state_doc) = local_state.get_document_by_uuid(&remote_doc.uuid) {
                 if state_doc.pending_deletion {
                     continue;
                 }
@@ -140,11 +140,17 @@ pub async fn execute() -> Result<()> {
 
     // Group documents by actual file directory path (not category_path)
     for doc in &all_docs {
-        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
-        let local_file_path = doc.local_path(working_category_path);
+        // Check if we have local state for this document (to get actual file path)
+        let actual_file_path = if let Some(local_doc) = local_state.get_document_by_uuid(&doc.uuid) {
+            // Use actual file path from state.json if available
+            local_doc.path.clone()
+        } else {
+            // Otherwise use generated path
+            doc.local_path(working_category_path)
+        };
 
-        // Extract directory path from local file path
-        let file_path = Path::new(&local_file_path);
+        // Extract directory path from actual file path
+        let file_path = Path::new(&actual_file_path);
         let dir_path = if let Some(parent) = file_path.parent() {
             if let Some(parent_str) = parent.to_str() {
                 parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
@@ -154,14 +160,20 @@ pub async fn execute() -> Result<()> {
         } else {
             "Unknown".to_string()
         };
+        
+        // Get actual filename from file path (preserving case)
+        let actual_filename = file_path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&doc.title)
+            .to_string();
 
         tree.entry(dir_path)
             .or_insert_with(Vec::new)
             .push(DocumentInfo {
-                title: doc.title.clone(),
+                title: actual_filename,
                 uuid: doc.uuid.clone(),
                 doc_type: doc.doc_type.clone(),
-                status: get_document_status(&doc.uuid, &local_file_path, &local_state),
+                status: get_document_status(&doc.uuid, &actual_file_path, &local_state),
                 local_version: get_local_version(&doc.uuid, &local_state),
                 remote_version: get_remote_version(&doc.uuid, &remote_versions),
                 source: DocumentSource::Docuram,
@@ -201,31 +213,37 @@ pub async fn execute() -> Result<()> {
     }
 
     // Add new local documents
-    for new_doc in &new_docs_with_meta {
-        // Extract directory path from the actual file path
-        let file_path = Path::new(&new_doc.file_path);
-        let dir_path = if let Some(parent) = file_path.parent() {
-            if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
+        for new_doc in &new_docs_with_meta {
+            // Extract directory path from the actual file path
+            let file_path = Path::new(&new_doc.file_path);
+            let dir_path = if let Some(parent) = file_path.parent() {
+                if let Some(parent_str) = parent.to_str() {
+                    parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
+                } else {
+                    "Unknown".to_string()
+                }
             } else {
                 "Unknown".to_string()
-            }
-        } else {
-            "Unknown".to_string()
-        };
+            };
+            
+            // Get original filename without extension (preserving case)
+            let original_filename = file_path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
 
-        tree.entry(dir_path)
-            .or_insert_with(Vec::new)
-            .push(DocumentInfo {
-                title: new_doc.front_matter.title.clone(),
-                uuid: String::new(),
-                doc_type: new_doc.front_matter.doc_type.clone().unwrap_or_else(|| "knowledge".to_string()),
-                status: "New".to_string(),
-                local_version: "-".to_string(),
-                remote_version: "-".to_string(),
-                source: DocumentSource::New,
-            });
-    }
+            tree.entry(dir_path)
+                .or_insert_with(Vec::new)
+                .push(DocumentInfo {
+                    title: original_filename,
+                    uuid: String::new(),
+                    doc_type: new_doc.front_matter.doc_type.clone().unwrap_or_else(|| "knowledge".to_string()),
+                    status: "New".to_string(),
+                    local_version: "-".to_string(),
+                    remote_version: "-".to_string(),
+                    source: DocumentSource::New,
+                });
+        }
 
     // Add remote new documents (on server but not in local docuram.json)
     for remote_doc in &remote_new_docs {
@@ -343,7 +361,7 @@ enum DocumentSource {
 
 // Helper functions
 fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> String {
-    if let Some(local_doc) = local_state.get_document(uuid) {
+    if let Some(local_doc) = local_state.get_document_by_uuid(uuid) {
         // Check if marked for deletion first
         if local_doc.pending_deletion {
             return "Pending deletion".to_string();
@@ -353,7 +371,7 @@ fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> Stri
         if file_path.exists() {
             match utils::read_file(path) {
                 Ok(content) => {
-                    // Calculate checksum of complete content (including frontmatter)
+                    // Calculate checksum of complete content
                     let current_checksum = utils::calculate_checksum(&content);
                     if current_checksum == local_doc.checksum {
                         "Synced".to_string()
@@ -377,7 +395,7 @@ fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> Stri
 }
 
 fn get_local_version(uuid: &str, local_state: &LocalState) -> String {
-    local_state.get_document(uuid)
+    local_state.get_document_by_uuid(uuid)
         .map(|d| d.version.to_string())
         .unwrap_or_else(|| "-".to_string())
 }

@@ -223,7 +223,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         let current_checksum = calculate_checksum(&current_content);
 
         // Check if modified
-        let is_modified = match local_state.get_document(&doc_info.uuid) {
+        let is_modified = match local_state.get_document_by_uuid(&doc_info.uuid) {
             Some(local_info) => current_checksum != local_info.checksum,
             None => {
                 // No local state, compare with remote checksum
@@ -340,13 +340,20 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     // Use the version returned from server
                     let version = updated_doc.version;
 
-                    // Update local state with server version
+                    // Update local state with server version and complete metadata
                     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
                         uuid: uuid.clone(),
                         path: path.clone(),
                         checksum,
                         version,
                         last_sync: chrono::Utc::now().to_rfc3339(),
+                        title: title.clone(),  // Use title from the tuple
+                        category_path: docuram_config.docuram.category_path.clone(),  // Use category from config
+                        category_uuid: docuram_config.docuram.category_uuid.clone().unwrap_or_default(),  // Use category UUID from config
+                        doc_type: "knowledge".to_string(),  // Default doc type
+                        description: None,
+                        priority: None,
+                        is_required: false,  // Not required by default
                         pending_deletion: false,
                     });
                     success_count += 1;
@@ -436,22 +443,14 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                 }
             };
 
-            // Create document - push complete content including frontmatter
-            // Note: new_doc.content already excludes frontmatter from extract_front_matter
-            // We need to reconstruct the full document with frontmatter
-            let full_content = {
-                use crate::utils::FrontMatterWrapper;
-                let wrapper = FrontMatterWrapper {
-                    docuram: new_doc.front_matter.clone(),
-                };
-                let yaml = serde_yaml::to_string(&wrapper).unwrap_or_default();
-                format!("---\n{}---\n\n{}", yaml, new_doc.content)
-            };
+            // Create document - push pure markdown content without frontmatter
+            // Use original file content (new_doc.content already contains full content for files without frontmatter)
+            let full_content = &new_doc.content;
 
             let doc_create = DocumentCreate {
                 category_id,
                 title: new_doc.front_matter.title.clone(),
-                content: full_content.clone(),
+                content: full_content.to_string(),
                 description: new_doc.front_matter.description.clone(),
                 doc_type: new_doc.front_matter.doc_type.clone().or(Some("knowledge".to_string())),
                 priority: new_doc.front_matter.priority.or(Some(0)),
@@ -460,44 +459,29 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
             match client.create_document(doc_create).await {
                 Ok(created_doc) => {
-                    // Update the front matter with uuid, version, and category_uuid from server
-                    let mut updated_front_matter = new_doc.front_matter.clone();
-                    updated_front_matter.uuid = Some(created_doc.uuid.clone());
-                    updated_front_matter.version = Some(created_doc.version);
-
-                    // Get category_uuid from the response if available
-                    if let Some(ref category) = created_doc.category {
-                        updated_front_matter.category_uuid = Some(category.uuid.clone());
-                    }
-
-                    // Update the file with new front matter
-                    if let Err(e) = update_front_matter(&new_doc.file_path, &updated_front_matter, &new_doc.content) {
-                        eprintln!("Warning: Failed to update front matter for {}: {}", new_doc.file_path, e);
-                    }
-
-                    // Read the updated file content for checksum calculation
+                    // Read the file content for checksum calculation (pure markdown, no frontmatter)
                     let updated_full_content = match read_file(&new_doc.file_path) {
                         Ok(content) => content,
-                        Err(_) => {
-                            // Fallback: reconstruct from updated frontmatter
-                            let wrapper = crate::utils::FrontMatterWrapper {
-                                docuram: updated_front_matter.clone(),
-                            };
-                            let yaml = serde_yaml::to_string(&wrapper).unwrap_or_default();
-                            format!("---\n{}---\n\n{}", yaml, new_doc.content)
-                        }
+                        Err(_) => full_content.to_string(),
                     };
 
-                    // Calculate checksum for local state (with complete content including frontmatter)
+                    // Calculate checksum for local state (pure markdown content without frontmatter)
                     let checksum = calculate_checksum(&updated_full_content);
 
-                    // Update local state
+                    // Update local state with complete metadata
                     local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
                         uuid: created_doc.uuid.clone(),
                         path: new_doc.file_path.clone(),
                         checksum,
                         version: created_doc.version,
                         last_sync: chrono::Utc::now().to_rfc3339(),
+                        title: created_doc.title.clone(),
+                        category_path: docuram_config.docuram.category_path.clone(),  // Use category from config
+                        category_uuid: docuram_config.docuram.category_uuid.clone().unwrap_or_default(),  // Use category UUID from config
+                        doc_type: new_doc.front_matter.doc_type.clone().unwrap_or_else(|| "knowledge".to_string()),  // Use doc_type from new_doc's front_matter
+                        description: created_doc.description.clone(),
+                        priority: None,
+                        is_required: false,
                         pending_deletion: false,
                     });
 

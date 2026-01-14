@@ -151,7 +151,7 @@ pub fn extract_front_matter(content: &str) -> Result<Option<(FrontMatter, String
     Ok(Some((front_matter, remaining_content)))
 }
 
-/// Scan a directory for markdown files with front matter
+/// Scan a directory for markdown files with or without front matter
 pub fn scan_documents_with_meta<P: AsRef<Path>>(dir: P) -> Result<Vec<DocumentWithMeta>> {
     use walkdir::WalkDir;
 
@@ -185,7 +185,31 @@ pub fn scan_documents_with_meta<P: AsRef<Path>>(dir: P) -> Result<Vec<DocumentWi
                 });
             }
             Ok(None) => {
-                // No front matter found, skip
+                // No front matter found, create a default one from filename
+                let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                // Use original filename as title (preserving case)
+                let title = filename.to_string();
+                
+                // Create default front matter
+                let front_matter = FrontMatter {
+                    schema: "TEAMTURBO DOCURAM DOCUMENT".to_string(),
+                    category: "".to_string(),
+                    title,
+                    slug: None,
+                    description: None,
+                    doc_type: Some("knowledge".to_string()),
+                    priority: None,
+                    is_required: None,
+                    uuid: None,
+                    category_uuid: None,
+                    version: None,
+                };
+                
+                documents.push(DocumentWithMeta {
+                    front_matter,
+                    content,
+                    file_path: path.to_string_lossy().to_string(),
+                });
             }
             Err(_) => {
                 // Failed to parse front matter, skip silently

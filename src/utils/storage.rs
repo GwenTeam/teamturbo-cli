@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// Local state tracking file changes
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct LocalState {
-    /// Map of document uuid to local file info
+    /// Map of document path to local file info (using path as key for better directory structure support)
     pub documents: HashMap<String, LocalDocumentInfo>,
 }
 
@@ -18,9 +18,31 @@ pub struct LocalDocumentInfo {
     pub checksum: String,
     pub version: i64,
     pub last_sync: String,
+    #[serde(default = "default_title")]
+    pub title: String,
+    #[serde(default)]
+    pub category_path: String,
+    #[serde(default)]
+    pub category_uuid: String,
+    #[serde(default = "default_doc_type")]
+    pub doc_type: String,
+    pub description: Option<String>,
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub is_required: bool,
     /// Mark document as pending deletion (will be deleted from server on next push)
     #[serde(default)]
     pub pending_deletion: bool,
+}
+
+/// Default title for backward compatibility
+fn default_title() -> String {
+    "".to_string()
+}
+
+/// Default doc_type for backward compatibility
+fn default_doc_type() -> String {
+    "knowledge".to_string()
 }
 
 impl LocalState {
@@ -62,18 +84,44 @@ impl LocalState {
         Ok(())
     }
 
-    /// Get document info
-    pub fn get_document(&self, uuid: &str) -> Option<&LocalDocumentInfo> {
-        self.documents.get(uuid)
+    /// Get document info by UUID (for backward compatibility)
+    pub fn get_document_by_uuid(&self, uuid: &str) -> Option<&LocalDocumentInfo> {
+        self.documents.values().find(|doc| doc.uuid == uuid)
     }
 
-    /// Update or insert document info
+    /// Get document info by path
+    pub fn get_document(&self, path: &str) -> Option<&LocalDocumentInfo> {
+        self.documents.get(path)
+    }
+
+    /// Update or insert document info using path as key
     pub fn upsert_document(&mut self, info: LocalDocumentInfo) {
-        self.documents.insert(info.uuid.clone(), info);
+        self.documents.insert(info.path.clone(), info);
     }
 
-    /// Remove document info
-    pub fn remove_document(&mut self, uuid: &str) -> Option<LocalDocumentInfo> {
-        self.documents.remove(uuid)
+    /// Remove document info by path
+    pub fn remove_document(&mut self, path: &str) -> Option<LocalDocumentInfo> {
+        self.documents.remove(path)
+    }
+
+    /// Remove document info by UUID (for backward compatibility)
+    pub fn remove_document_by_uuid(&mut self, uuid: &str) -> Option<LocalDocumentInfo> {
+        // Find the path first
+        let path_to_remove = match self.get_document_by_uuid(uuid) {
+            Some(doc) => doc.path.clone(),
+            None => return None,
+        };
+        
+        self.remove_document(&path_to_remove)
+    }
+
+    /// Get all document infos
+    pub fn get_all_documents(&self) -> Vec<&LocalDocumentInfo> {
+        self.documents.values().collect()
+    }
+
+    /// Find document by UUID (for backward compatibility)
+    pub fn find_document_by_uuid(&self, uuid: &str) -> Option<&LocalDocumentInfo> {
+        self.documents.values().find(|doc| doc.uuid == uuid)
     }
 }
