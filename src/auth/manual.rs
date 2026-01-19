@@ -52,7 +52,7 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
         println!("{}", style("✓ Token verified successfully!").green().bold());
         println!("  {} {} ({})",
             style("Logged in as:").dim(),
-            style(&user.display_name).cyan().bold(),
+            style(user.display_name_or_account()).cyan().bold(),
             style(&user.email).dim()
         );
 
@@ -61,7 +61,7 @@ pub async fn authorize(base_url: &str) -> Result<AuthConfig> {
             token_type: "Bearer".to_string(),
             expires_at,
             user_id: user.id,
-            user_name: user.display_name,
+            user_name: user.display_name_or_account().to_string(),
             user_email: user.email,
         })
     } else {

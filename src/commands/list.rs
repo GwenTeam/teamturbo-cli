@@ -17,8 +17,29 @@ pub async fn execute() -> Result<()> {
     // Get working category path
     let working_category_path = &docuram_config.docuram.category_path;
 
-    // Load local state
-    let local_state = LocalState::load()?;
+    // Load local state (mutable for auto-marking missing files)
+    let mut local_state = LocalState::load()?;
+
+    // Auto-detect missing files and mark them as pending deletion
+    let mut state_changed = false;
+    for doc_info in local_state.documents.values_mut() {
+        if !doc_info.pending_deletion {
+            let file_path = Path::new(&doc_info.path);
+            if !file_path.exists() {
+                // File is missing - mark for deletion
+                doc_info.pending_deletion = true;
+                state_changed = true;
+                println!("{} File missing, marked for deletion: {}",
+                    style("⚠").yellow(), doc_info.path);
+            }
+        }
+    }
+
+    // Save state if any changes were made
+    if state_changed {
+        local_state.save()?;
+        println!();
+    }
 
     // Try to fetch remote documents and versions
     let (remote_versions, remote_docs) = fetch_remote_documents(&docuram_config).await;
@@ -89,10 +110,11 @@ pub async fn execute() -> Result<()> {
     for doc_info in local_state.documents.values() {
         let in_docuram = all_docs.iter().any(|d| d.uuid == doc_info.uuid);
 
-        if doc_info.pending_deletion {
-            // Collect pending deletion documents separately
+        if doc_info.pending_deletion && !in_docuram {
+            // Collect pending deletion documents that are NOT in docuram.json
+            // Documents in docuram.json will be displayed from all_docs with "Pending deletion" status
             pending_deletion_docs.push(doc_info.clone());
-        } else if !in_docuram {
+        } else if !in_docuram && !doc_info.pending_deletion {
             // Not in docuram.json and not pending deletion
             let file_path = Path::new(&doc_info.path);
             if file_path.exists() {
@@ -149,14 +171,10 @@ pub async fn execute() -> Result<()> {
             doc.local_path(working_category_path)
         };
 
-        // Extract directory path from actual file path
+        // Extract directory path from actual file path (preserve full path for tree display)
         let file_path = Path::new(&actual_file_path);
         let dir_path = if let Some(parent) = file_path.parent() {
-            if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
-            } else {
-                "Unknown".to_string()
-            }
+            parent.to_str().unwrap_or("Unknown").to_string()
         } else {
             "Unknown".to_string()
         };
@@ -190,11 +208,7 @@ pub async fn execute() -> Result<()> {
             .to_string();
 
         let category = if let Some(parent) = file_path.parent() {
-            if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
-            } else {
-                "Unknown".to_string()
-            }
+            parent.to_str().unwrap_or("Unknown").to_string()
         } else {
             "Unknown".to_string()
         };
@@ -214,14 +228,10 @@ pub async fn execute() -> Result<()> {
 
     // Add new local documents
         for new_doc in &new_docs_with_meta {
-            // Extract directory path from the actual file path
+            // Extract directory path from the actual file path (preserve full path)
             let file_path = Path::new(&new_doc.file_path);
             let dir_path = if let Some(parent) = file_path.parent() {
-                if let Some(parent_str) = parent.to_str() {
-                    parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
-                } else {
-                    "Unknown".to_string()
-                }
+                parent.to_str().unwrap_or("Unknown").to_string()
             } else {
                 "Unknown".to_string()
             };
@@ -247,17 +257,13 @@ pub async fn execute() -> Result<()> {
 
     // Add remote new documents (on server but not in local docuram.json)
     for remote_doc in &remote_new_docs {
-        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        // Use local_path() to get correct path (dependencies go in dependencies/ at project root)
         let local_file_path = remote_doc.local_path(working_category_path);
 
-        // Extract directory path from local file path
+        // Extract directory path from local file path (preserve full path)
         let file_path = Path::new(&local_file_path);
         let dir_path = if let Some(parent) = file_path.parent() {
-            if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
-            } else {
-                "Unknown".to_string()
-            }
+            parent.to_str().unwrap_or("Unknown").to_string()
         } else {
             "Unknown".to_string()
         };
@@ -285,11 +291,7 @@ pub async fn execute() -> Result<()> {
             .to_string();
 
         let category = if let Some(parent) = file_path.parent() {
-            if let Some(parent_str) = parent.to_str() {
-                parent_str.strip_prefix("docuram/").unwrap_or(parent_str).to_string()
-            } else {
-                "Unknown".to_string()
-            }
+            parent.to_str().unwrap_or("Unknown").to_string()
         } else {
             "Unknown".to_string()
         };
@@ -308,10 +310,10 @@ pub async fn execute() -> Result<()> {
     }
 
     // No longer add empty categories from category_tree
-    // We only show document type directories (organic, impl, dependencies) with actual content
+    // We only show document type directories (docuram/organic, docuram/impl, etc.) with actual content
 
-    // Ensure standard directories are always shown (organic, impl, req, manual) even if empty
-    for standard_dir in ["organic", "impl", "req", "manual"] {
+    // Ensure standard directories are always shown (docuram/organic, docuram/impl, docuram/req, docuram/manual) even if empty
+    for standard_dir in ["docuram/organic", "docuram/impl", "docuram/req", "docuram/manual"] {
         if !tree.contains_key(standard_dir) {
             tree.insert(standard_dir.to_string(), Vec::new());
         }
@@ -330,11 +332,11 @@ pub async fn execute() -> Result<()> {
     println!("{}", style("Legend:").bold());
     println!("  {} - File synced and unchanged", style("✓ Synced").green());
     println!("  {} - File has local modifications", style("⚠ Modified").yellow());
-    println!("  {} - File missing or has errors", style("✗ Missing/Error").red());
+    println!("  {} - Error reading file", style("✗ Error").red());
     println!("  {} - File not downloaded yet", style("○ Not downloaded").dim());
     println!("  {} - New local document (run 'teamturbo push' to upload)", style("+ New").cyan().bold());
     println!("  {} - New document on server (run 'teamturbo pull' to download)", style("⬇ Remote").blue().bold());
-    println!("  {} - Marked for deletion (run 'teamturbo push' to delete from server)", style("🗑 Pending deletion").red().dim());
+    println!("  {} - File deleted, pending server sync (run 'teamturbo push' to delete from server)", style("🗑 Pending deletion").red().dim());
     println!("  {} - Remote version has updates available", style("[v1→v2]").yellow());
     println!();
 
@@ -382,7 +384,8 @@ fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> Stri
                 Err(_) => "Error".to_string(),
             }
         } else {
-            "Missing".to_string()
+            // File is missing - treat as pending deletion
+            "Pending deletion".to_string()
         }
     } else {
         let file_path = Path::new(path);
@@ -415,7 +418,7 @@ fn get_status_colored(status: &str) -> console::StyledObject<String> {
     match status {
         "Synced" => style(format!("✓ {}", status)).green(),
         "Modified" => style(format!("⚠ {}", status)).yellow(),
-        "Error" | "Missing" => style(format!("✗ {}", status)).red(),
+        "Error" => style(format!("✗ {}", status)).red(),
         "Not synced" => style(format!("⚠ {}", status)).yellow(),
         "Not downloaded" => style(format!("○ {}", status)).dim(),
         "New" => style(format!("+ {}", status)).cyan().bold(),

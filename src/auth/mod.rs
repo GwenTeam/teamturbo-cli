@@ -41,8 +41,15 @@ pub struct AuthData {
 pub struct User {
     pub id: i64,
     pub account: String,
-    pub display_name: String,
+    pub display_name: Option<String>,
     pub email: String,
+}
+
+impl User {
+    /// Get display name, fallback to account if display_name is None
+    pub fn display_name_or_account(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.account)
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -34,7 +34,14 @@ pub struct ApiClient {
 pub struct User {
     pub id: i64,
     pub account: String,
-    pub display_name: String,
+    pub display_name: Option<String>,
+}
+
+impl User {
+    /// Get display name, fallback to account if display_name is None
+    pub fn display_name_or_account(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.account)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,25 +73,19 @@ impl DocuramConfig {
         self.documents.iter().chain(self.requires.iter())
     }
 
-    /// Save to docuram/docuram.json
+    /// Save to docuram.json
     pub fn save(&self) -> Result<()> {
         use std::path::PathBuf;
         use std::fs;
         use anyhow::Context;
 
-        let path = PathBuf::from("docuram").join("docuram.json");
-
-        // Ensure docuram directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
-        }
+        let path = PathBuf::from("docuram.json");
 
         let content = serde_json::to_string_pretty(self)
             .context("Failed to serialize docuram config")?;
 
         fs::write(&path, content)
-            .context("Failed to write docuram/docuram.json")?;
+            .context("Failed to write docuram.json")?;
 
         Ok(())
     }
@@ -181,7 +182,7 @@ impl DocumentInfo {
     /// Documents are organized by type (organic, impl, etc.) directly under docuram/
     /// Preserves the subdirectory structure within each type directory
     /// For example: docuram/organic/subdir/doc.md, docuram/impl/feature/doc.md
-    /// Dependencies are placed in docuram/dependencies/ with their category structure
+    /// Dependencies are placed in dependencies/ (at project root) with their category structure
     pub fn local_path(&self, working_category_path: &str) -> String {
         // Extract the relative path after "docuram/" from the original path
         let path_without_docuram = self.path.strip_prefix("docuram/").unwrap_or(&self.path);
@@ -204,9 +205,9 @@ impl DocumentInfo {
                                        self.category_path.starts_with(&format!("{}/", working_category_path));
 
         if self.is_required && !is_working_category_doc {
-            // Dependency documents from other categories go into docuram/dependencies/
+            // Dependency documents from other categories go into dependencies/ (at project root)
             // Preserve the original category structure
-            format!("docuram/dependencies/{}/{}", self.category_path, relative_path)
+            format!("dependencies/{}/{}", self.category_path, relative_path)
         } else {
             // Main documents preserve the subdirectory structure from category_path
             // Extract subdirectory path after working_category_path

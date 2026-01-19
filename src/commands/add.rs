@@ -37,7 +37,7 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
 
     // Load docuram config to validate we're in a docuram project and get category info
     let docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Use the organic directory directly under docuram/
     let organic_path = PathBuf::from("docuram/organic");

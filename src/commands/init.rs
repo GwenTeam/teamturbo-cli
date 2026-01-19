@@ -14,11 +14,11 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     println!("{}", style("Initialize Docuram Project").cyan().bold());
     println!();
 
-    // Check if docuram/docuram.json already exists
-    let config_path = Path::new("docuram").join("docuram.json");
+    // Check if docuram.json already exists
+    let config_path = Path::new("docuram.json");
     if config_path.exists() && !force {
         anyhow::bail!(
-            "docuram/docuram.json already exists. Use --force to overwrite, or run 'teamturbo pull' to update documents."
+            "docuram.json already exists. Use --force to overwrite, or run 'teamturbo pull' to update documents."
         );
     }
 
@@ -58,12 +58,12 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
     fs::create_dir_all("docuram")
         .context("Failed to create docuram directory")?;
 
-    // Save docuram/docuram.json
-    println!("Saving {}...", style("docuram/docuram.json").cyan());
+    // Save docuram.json
+    println!("Saving {}...", style("docuram.json").cyan());
     let config_json = serde_json::to_string_pretty(&docuram_config)
         .context("Failed to serialize config")?;
     fs::write(&config_path, config_json)
-        .context("Failed to write docuram/docuram.json")?;
+        .context("Failed to write docuram.json")?;
 
     println!("{}", style("✓ Configuration saved").green());
     println!();
@@ -135,9 +135,9 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
         }
     }
 
-    // Create dependencies directory if there are dependency documents
+    // Create dependencies directory (at project root) if there are dependency documents
     if !docuram_config.requires.is_empty() {
-        let dependencies_path = PathBuf::from("docuram/dependencies");
+        let dependencies_path = PathBuf::from("dependencies");
         if !dependencies_path.exists() {
             fs::create_dir_all(&dependencies_path)
                 .context("Failed to create dependencies directory")?;

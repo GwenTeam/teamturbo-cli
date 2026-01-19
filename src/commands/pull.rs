@@ -15,7 +15,7 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
 
     // Load docuram config
     let mut docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
     let cli_config = CliConfig::load()?;
@@ -69,7 +69,7 @@ pub async fn execute(documents: Vec<String>, force: bool) -> Result<()> {
         created_count += 1;
     }
 
-    let dependencies_path = PathBuf::from("docuram/dependencies");
+    let dependencies_path = PathBuf::from("dependencies");
     if !dependencies_path.exists() {
         fs::create_dir_all(&dependencies_path)
             .context("Failed to create dependencies directory")?;

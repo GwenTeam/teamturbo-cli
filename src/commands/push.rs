@@ -14,25 +14,42 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
     println!("{}", style("Push Document Changes").cyan().bold());
     println!();
 
-    // Load docuram config
-    let docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
+    // Load docuram config (mutable for removing deleted documents)
+    let mut docuram_config = DocuramConfig::load()
+        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
     let cli_config = CliConfig::load()?;
 
-    let server_url = docuram_config.server_url();
+    let server_url = docuram_config.server_url().to_string();
 
     // Get auth for this server
     let auth = cli_config
-        .get_auth(server_url)
+        .get_auth(&server_url)
         .context(format!("Not logged in to {}. Run 'teamturbo login' first.", server_url))?;
 
     // Create API client
-    let client = ApiClient::new(server_url.to_string(), auth.access_token.clone());
+    let client = ApiClient::new(server_url.clone(), auth.access_token.clone());
 
     // Load local state
     let mut local_state = LocalState::load()?;
+
+    // Auto-detect missing files and mark them as pending deletion
+    let mut newly_marked_count = 0;
+    for doc_info in local_state.documents.values_mut() {
+        if !doc_info.pending_deletion {
+            let file_path = std::path::Path::new(&doc_info.path);
+            if !file_path.exists() {
+                doc_info.pending_deletion = true;
+                newly_marked_count += 1;
+            }
+        }
+    }
+
+    if newly_marked_count > 0 {
+        println!("{}", style(format!("Detected {} missing file(s), marked for deletion", newly_marked_count)).yellow());
+        local_state.save()?;
+    }
 
     // First, process documents marked for deletion
     let pending_deletions: Vec<_> = local_state
@@ -47,6 +64,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         println!();
 
         let mut deleted_count = 0;
+        let mut deleted_uuids = Vec::new();
         let mut failed_deletions = Vec::new();
 
         for doc_info in &pending_deletions {
@@ -57,6 +75,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     // Remove from state.json after successful deletion
                     // Use path as key since HashMap is keyed by path, not UUID
                     local_state.remove_document(&doc_info.path);
+                    deleted_uuids.push(doc_info.uuid.clone());
                     deleted_count += 1;
                 }
                 Err(e) => {
@@ -65,6 +84,14 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     failed_deletions.push((doc_info.uuid.clone(), e.to_string()));
                 }
             }
+        }
+
+        // Remove deleted documents from docuram.json
+        if !deleted_uuids.is_empty() {
+            let deleted_set: HashSet<String> = deleted_uuids.into_iter().collect();
+            docuram_config.documents.retain(|d| !deleted_set.contains(&d.uuid));
+            docuram_config.requires.retain(|d| !deleted_set.contains(&d.uuid));
+            docuram_config.save()?;
         }
 
         // Save state after deletions
@@ -123,8 +150,8 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
     let new_docs: Vec<_> = new_docs_with_meta
         .into_iter()
         .filter(|d| {
-            // Exclude documents in dependencies/ directory
-            if d.file_path.contains("/dependencies/") {
+            // Exclude documents in dependencies/ directory (at project root)
+            if d.file_path.starts_with("dependencies/") {
                 return false;
             }
 

@@ -15,7 +15,7 @@ pub async fn execute(paths: Vec<String>, from: Option<String>, to: Option<String
 
     // Load docuram config to validate we're in a docuram project
     let _docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Determine the import mode
     let import_mode = determine_import_mode(&paths, &from, &to)?;

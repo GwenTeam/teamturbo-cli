@@ -20,7 +20,7 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
 
     // Load docuram config
     let mut docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Make sure you're in a docuram project directory.")?;
+        .context("Failed to load docuram.json. Make sure you're in a docuram project directory.")?;
 
     // Load local state
     let mut local_state = LocalState::load().unwrap_or_default();
@@ -314,7 +314,7 @@ fn find_document_by_path(
 ) -> Option<DocumentToDelete> {
     // Try to match by path in docuram.json (documents and requires)
     for doc in docuram_config.all_documents() {
-        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        // Use local_path() to get correct path (dependencies go in dependencies/ at project root)
         let local_file_path = doc.local_path(working_category_path);
         let doc_path = PathBuf::from(&local_file_path);
         if doc_path == file_path || doc_path.canonicalize().ok() == file_path.canonicalize().ok() {
@@ -418,7 +418,7 @@ fn find_documents_in_directory(
 
     // Search in docuram.json (documents and requires)
     for doc in docuram_config.all_documents() {
-        // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+        // Use local_path() to get correct path (dependencies go in dependencies/ at project root)
         let local_file_path = doc.local_path(working_category_path);
         let doc_path = PathBuf::from(&local_file_path);
 
@@ -608,8 +608,10 @@ fn remove_empty_directories(dir_path: &Path) -> Result<()> {
     }
 
     // Then try to remove this directory if it's empty
-    // Don't remove the docuram/ directory itself
-    if dir_path.file_name() != Some(std::ffi::OsStr::new("docuram")) {
+    // Don't remove the docuram/ or dependencies/ directories themselves
+    let dir_name = dir_path.file_name();
+    if dir_name != Some(std::ffi::OsStr::new("docuram")) &&
+       dir_name != Some(std::ffi::OsStr::new("dependencies")) {
         if let Ok(mut entries) = fs::read_dir(dir_path) {
             if entries.next().is_none() {
                 let _ = fs::remove_dir(dir_path);

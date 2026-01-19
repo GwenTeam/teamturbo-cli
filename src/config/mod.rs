@@ -170,7 +170,7 @@ impl DocumentInfo {
     /// Documents are organized by type (organic, impl, etc.) directly under docuram/
     /// Preserves the subdirectory structure within each type directory
     /// For example: docuram/organic/subdir/doc.md, docuram/impl/feature/doc.md
-    /// Dependencies are placed in docuram/dependencies/ with their category structure
+    /// Dependencies are placed in dependencies/ (at project root) with their category structure
     pub fn local_path(&self, working_category_path: &str) -> String {
         // Extract the relative path after "docuram/" from the original path
         let path_without_docuram = self.path.strip_prefix("docuram/").unwrap_or(&self.path);
@@ -193,9 +193,9 @@ impl DocumentInfo {
                                        self.category_path.starts_with(&format!("{}/", working_category_path));
 
         if self.is_required && !is_working_category_doc {
-            // Dependency documents from other categories go into docuram/dependencies/
+            // Dependency documents from other categories go into dependencies/ (at project root)
             // Preserve the original category structure
-            format!("docuram/dependencies/{}/{}", self.category_path, relative_path)
+            format!("dependencies/{}/{}", self.category_path, relative_path)
         } else {
             // Main documents preserve the subdirectory structure from category_path
             // Extract subdirectory path after working_category_path
@@ -290,40 +290,34 @@ impl InstallMetadata {
 }
 
 impl DocuramConfig {
-    /// Get docuram.json path (docuram/docuram.json)
+    /// Get docuram.json path (at project root)
     pub fn config_path() -> PathBuf {
-        PathBuf::from("docuram").join("docuram.json")
+        PathBuf::from("docuram.json")
     }
 
-    /// Load from docuram/docuram.json
+    /// Load from docuram.json
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
         if !path.exists() {
-            anyhow::bail!("docuram/docuram.json not found. Run 'teamturbo init' first.");
+            anyhow::bail!("docuram.json not found. Run 'teamturbo init' first.");
         }
 
         let content = fs::read_to_string(&path)
-            .context("Failed to read docuram/docuram.json")?;
+            .context("Failed to read docuram.json")?;
 
         serde_json::from_str(&content)
-            .context("Failed to parse docuram/docuram.json")
+            .context("Failed to parse docuram.json")
     }
 
-    /// Save to docuram/docuram.json
+    /// Save to docuram.json
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
-
-        // Ensure docuram directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
-        }
 
         let content = serde_json::to_string_pretty(self)
             .context("Failed to serialize docuram config")?;
 
         fs::write(&path, content)
-            .context("Failed to write docuram/docuram.json")?;
+            .context("Failed to write docuram.json")?;
 
         Ok(())
     }

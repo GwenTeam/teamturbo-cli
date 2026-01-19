@@ -16,7 +16,7 @@ pub async fn execute(targets: Vec<String>, message: String, verbose: bool) -> Re
 
     // Load docuram config
     let docuram_config = DocuramConfig::load()
-        .context("Failed to load docuram/docuram.json. Run 'teamturbo init' first.")?;
+        .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
     let cli_config = CliConfig::load()

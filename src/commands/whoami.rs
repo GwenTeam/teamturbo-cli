@@ -30,7 +30,7 @@ pub async fn execute() -> Result<()> {
                 println!("  {}: {}", style("Status").dim(), style("✓ Active").green());
                 println!("  {}: {} ({})",
                     style("User").dim(),
-                    verify_response.user.display_name,
+                    verify_response.user.display_name_or_account(),
                     verify_response.user.account
                 );
                 println!("  {}: {}",

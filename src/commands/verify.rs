@@ -35,7 +35,7 @@ pub async fn execute() -> Result<()> {
     // Load docuram configuration
     let config_path = docuram_path.join("docuram.json");
     if !config_path.exists() {
-        anyhow::bail!("docuram/docuram.json not found. Run 'teamturbo init' first.");
+        anyhow::bail!("docuram.json not found. Run 'teamturbo init' first.");
     }
 
     let docuram_config = DocuramConfig::load()
