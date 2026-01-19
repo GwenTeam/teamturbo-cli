@@ -55,7 +55,8 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     println!("  {} Deleted from server: {}", style("✓").green(), doc_info.path);
 
                     // Remove from state.json after successful deletion
-                    local_state.remove_document(&doc_info.uuid);
+                    // Use path as key since HashMap is keyed by path, not UUID
+                    local_state.remove_document(&doc_info.path);
                     deleted_count += 1;
                 }
                 Err(e) => {

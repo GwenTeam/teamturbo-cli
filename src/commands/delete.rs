@@ -113,7 +113,11 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
         let doc_path = PathBuf::from(&doc.path);
         let file_exists = doc_path.exists();
 
-        if local_state.documents.contains_key(&doc.uuid) {
+        // Check if document is in state.json by path (HashMap is keyed by path, not UUID)
+        let in_state = local_state.documents.contains_key(&doc.path) ||
+            local_state.get_document_by_uuid(&doc.uuid).is_some();
+
+        if in_state {
             // Document is in state.json, meaning it was uploaded
             uploaded_docs.push(doc.clone());
         } else if file_exists {
@@ -185,9 +189,21 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
         println!("{}", style("Marking documents for deletion from server...").dim());
 
         for doc in &server_docs {
-            if let Some(doc_info) = local_state.documents.get_mut(&doc.uuid) {
-                doc_info.pending_deletion = true;
-                println!("  {} Marked for deletion: {}", style("⏳").yellow(), doc.title);
+            // Try to find the document in state.json by path first, then by UUID
+            // HashMap is keyed by path, not UUID
+            let doc_path_key = if local_state.documents.contains_key(&doc.path) {
+                Some(doc.path.clone())
+            } else if let Some(state_doc) = local_state.get_document_by_uuid(&doc.uuid) {
+                Some(state_doc.path.clone())
+            } else {
+                None
+            };
+
+            if let Some(path_key) = doc_path_key {
+                if let Some(doc_info) = local_state.documents.get_mut(&path_key) {
+                    doc_info.pending_deletion = true;
+                    println!("  {} Marked for deletion: {}", style("⏳").yellow(), doc.title);
+                }
             } else {
                 // Document not in state.json yet (config-only), no need to mark
                 println!("  {} Will remove from config: {}", style("○").dim(), doc.title);
@@ -245,7 +261,12 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
     // - Remove local-only documents (not synced) completely from state.json
     // - Keep uploaded documents in state.json with pending_deletion flag for push to handle
     for doc in &local_only_docs {
-        local_state.documents.remove(&doc.uuid);
+        // Try to remove by path first (HashMap is keyed by path), then by UUID
+        if local_state.documents.contains_key(&doc.path) {
+            local_state.documents.remove(&doc.path);
+        } else {
+            local_state.remove_document_by_uuid(&doc.uuid);
+        }
     }
     // Config-only documents are not in state.json, so no need to update
 
@@ -339,28 +360,45 @@ fn find_document_by_path(
     }
 
     // Try to read frontmatter from the file itself
-    // This handles new documents that haven't been pushed yet
+    // This handles new documents that haven't been pushed yet (including those without UUID)
     if file_path.exists() && file_path.extension().and_then(|s| s.to_str()) == Some("md") {
+        // Get relative path from current directory
+        let relative_path = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+
         if let Ok(content) = read_file(file_path) {
             if let Ok(Some((front_matter, _))) = extract_front_matter(&content) {
-                if let Some(uuid) = front_matter.uuid {
-                    // Get relative path from current directory
-                    let relative_path = std::env::current_dir()
-                        .ok()
-                        .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+                // Use UUID from frontmatter if available, otherwise use path as identifier
+                // Documents without UUID are local-only and can still be deleted
+                let uuid = front_matter.uuid.unwrap_or_else(|| format!("local:{}", relative_path));
 
-                    return Some(DocumentToDelete {
-                        uuid,
-                        title: front_matter.title,
-                        path: relative_path,
-                        category_uuid: String::new(), // New documents don't have category UUID yet
-                        category_path: front_matter.category,
-                    });
-                }
+                return Some(DocumentToDelete {
+                    uuid,
+                    title: front_matter.title,
+                    path: relative_path,
+                    category_uuid: String::new(), // New documents don't have category UUID yet
+                    category_path: front_matter.category,
+                });
             }
         }
+
+        // Fallback: markdown file without frontmatter (empty or plain markdown)
+        // Still allow deletion as a local-only file
+        let title = file_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+
+        return Some(DocumentToDelete {
+            uuid: format!("local:{}", relative_path),
+            title,
+            path: relative_path,
+            category_uuid: String::new(),
+            category_path: String::new(),
+        });
     }
 
     None
@@ -494,31 +532,55 @@ fn find_documents_in_directory(
                     }
                 } else if file_path.extension().and_then(|s| s.to_str()) == Some("md") {
                     // Try to read frontmatter from markdown files
+                    // This handles new documents that haven't been pushed yet (including those without UUID)
+                    let relative_path = std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+
+                    let mut found = false;
                     if let Ok(content) = read_file(&file_path) {
                         if let Ok(Some((front_matter, _))) = extract_front_matter(&content) {
-                            if let Some(uuid) = front_matter.uuid {
-                                if seen_uuids.insert(uuid.clone()) {
-                                    // Get relative path from current directory
-                                    let relative_path = std::env::current_dir()
-                                        .ok()
-                                        .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+                            // Use UUID from frontmatter if available, otherwise use path as identifier
+                            let uuid = front_matter.uuid.clone()
+                                .unwrap_or_else(|| format!("local:{}", relative_path));
 
-                                    docs.push(DocumentToDelete {
-                                        uuid,
-                                        title: front_matter.title,
-                                        path: relative_path,
-                                        category_uuid: String::new(), // New documents don't have category UUID yet
-                                        category_path: front_matter.category,
-                                    });
-                                    if let Ok(canonical_file) = file_path.canonicalize() {
-                                        if seen_paths.insert(canonical_file) {
-                                            files.push(file_path);
-                                        }
-                                    }
-                                }
+                            if seen_uuids.insert(uuid.clone()) {
+                                docs.push(DocumentToDelete {
+                                    uuid,
+                                    title: front_matter.title,
+                                    path: relative_path.clone(),
+                                    category_uuid: String::new(),
+                                    category_path: front_matter.category,
+                                });
+                                found = true;
                             }
+                        }
+                    }
+
+                    // Fallback: markdown file without frontmatter (empty or plain markdown)
+                    if !found {
+                        let uuid = format!("local:{}", relative_path);
+                        if seen_uuids.insert(uuid.clone()) {
+                            let title = file_path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string();
+
+                            docs.push(DocumentToDelete {
+                                uuid,
+                                title,
+                                path: relative_path,
+                                category_uuid: String::new(),
+                                category_path: String::new(),
+                            });
+                        }
+                    }
+
+                    if let Ok(canonical_file) = file_path.canonicalize() {
+                        if seen_paths.insert(canonical_file) {
+                            files.push(file_path);
                         }
                     }
                 }
