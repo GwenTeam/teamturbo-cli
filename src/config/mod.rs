@@ -78,6 +78,27 @@ pub struct DocuramConfig {
     pub requires: Vec<DocumentInfo>,
     pub dependencies: Vec<CategoryDependency>,
     pub category_tree: Option<CategoryTree>,
+
+    /// Local documents not yet pushed to server
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_documents: Vec<LocalOnlyDocument>,
+
+    /// Public dependencies from docuram.teamturbo.io
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_dependencies: Vec<PublicDependency>,
+}
+
+/// Local document not yet pushed to server
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalOnlyDocument {
+    /// File path relative to project root
+    pub path: String,
+    /// Document title (from filename)
+    pub title: String,
+    /// Local file checksum
+    pub checksum: String,
+    /// Creation timestamp (ISO 8601 format)
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -141,6 +162,7 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DocumentInfo {
+    // === Server metadata (from server response) ===
     pub id: i64,
     pub uuid: String,
     pub title: String,
@@ -151,8 +173,21 @@ pub struct DocumentInfo {
     pub doc_type: String,
     pub version: i64,
     pub path: String,
-    pub checksum: String,
+    pub checksum: String,           // Server checksum
     pub is_required: bool,
+
+    // === Local sync state (optional, set after sync) ===
+    /// Local file checksum (used to detect local modifications)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_checksum: Option<String>,
+
+    /// Last sync timestamp (ISO 8601 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync: Option<String>,
+
+    /// Mark document as pending deletion (will be deleted from server on next push)
+    #[serde(default)]
+    pub pending_deletion: bool,
 }
 
 impl DocumentInfo {
@@ -233,6 +268,18 @@ pub struct CategoryDependency {
     pub category_name: String,
     pub category_path: String,
     pub document_count: i64,
+}
+
+/// Public dependency from docuram.teamturbo.io
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PublicDependency {
+    pub category_uuid: String,
+    pub category_name: String,
+    pub category_path: String,
+    pub source_url: String,
+    pub document_count: i64,
+    #[serde(default)]
+    pub documents: Vec<DocumentInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -330,5 +377,137 @@ impl DocuramConfig {
     /// Get all documents (documents + requires) as an iterator
     pub fn all_documents(&self) -> impl Iterator<Item = &DocumentInfo> {
         self.documents.iter().chain(self.requires.iter())
+    }
+
+    /// Get all documents (documents + requires) as a mutable iterator
+    pub fn all_documents_mut(&mut self) -> impl Iterator<Item = &mut DocumentInfo> {
+        self.documents.iter_mut().chain(self.requires.iter_mut())
+    }
+
+    /// Find document by UUID
+    pub fn get_document_by_uuid(&self, uuid: &str) -> Option<&DocumentInfo> {
+        self.all_documents().find(|d| d.uuid == uuid)
+    }
+
+    /// Find document by UUID (mutable)
+    pub fn get_document_by_uuid_mut(&mut self, uuid: &str) -> Option<&mut DocumentInfo> {
+        // Can't use all_documents_mut() here due to borrow checker
+        self.documents.iter_mut()
+            .chain(self.requires.iter_mut())
+            .find(|d| d.uuid == uuid)
+    }
+
+    /// Find document by path
+    pub fn get_document_by_path(&self, path: &str) -> Option<&DocumentInfo> {
+        self.all_documents().find(|d| d.path == path)
+    }
+
+    /// Find document by path (mutable)
+    pub fn get_document_by_path_mut(&mut self, path: &str) -> Option<&mut DocumentInfo> {
+        self.documents.iter_mut()
+            .chain(self.requires.iter_mut())
+            .find(|d| d.path == path)
+    }
+
+    /// Find local-only document by path
+    pub fn get_local_document_by_path(&self, path: &str) -> Option<&LocalOnlyDocument> {
+        self.local_documents.iter().find(|d| d.path == path)
+    }
+
+    /// Add a local-only document
+    pub fn add_local_document(&mut self, doc: LocalOnlyDocument) {
+        // Remove existing if any
+        self.local_documents.retain(|d| d.path != doc.path);
+        self.local_documents.push(doc);
+    }
+
+    /// Remove a local-only document by path
+    pub fn remove_local_document(&mut self, path: &str) -> Option<LocalOnlyDocument> {
+        let idx = self.local_documents.iter().position(|d| d.path == path)?;
+        Some(self.local_documents.remove(idx))
+    }
+
+    /// Get documents marked for deletion
+    pub fn get_pending_deletions(&self) -> Vec<&DocumentInfo> {
+        self.all_documents().filter(|d| d.pending_deletion).collect()
+    }
+
+    /// Mark a document as pending deletion
+    pub fn mark_for_deletion(&mut self, uuid: &str) -> bool {
+        if let Some(doc) = self.get_document_by_uuid_mut(uuid) {
+            doc.pending_deletion = true;
+            return true;
+        }
+        false
+    }
+
+    /// Remove document by UUID (from documents or requires)
+    pub fn remove_document_by_uuid(&mut self, uuid: &str) -> bool {
+        let orig_len = self.documents.len();
+        self.documents.retain(|d| d.uuid != uuid);
+        if self.documents.len() < orig_len {
+            return true;
+        }
+
+        let orig_len = self.requires.len();
+        self.requires.retain(|d| d.uuid != uuid);
+        self.requires.len() < orig_len
+    }
+
+    /// Load from docuram.json with migration from state.json
+    pub fn load_with_migration() -> Result<Self> {
+        let mut config = Self::load()?;
+
+        // Check if state.json exists and migrate data
+        let state_path = PathBuf::from(".docuram").join("state.json");
+        if state_path.exists() {
+            if let Ok(content) = fs::read_to_string(&state_path) {
+                if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(docs) = state.get("documents").and_then(|d| d.as_object()) {
+                        let mut migrated_count = 0;
+
+                        for (_path, doc_value) in docs {
+                            if let (Some(uuid), Some(checksum), Some(last_sync)) = (
+                                doc_value.get("uuid").and_then(|v| v.as_str()),
+                                doc_value.get("checksum").and_then(|v| v.as_str()),
+                                doc_value.get("last_sync").and_then(|v| v.as_str()),
+                            ) {
+                                // Find matching document in config and update local state
+                                if let Some(doc) = config.get_document_by_uuid_mut(uuid) {
+                                    if doc.local_checksum.is_none() {
+                                        doc.local_checksum = Some(checksum.to_string());
+                                        doc.last_sync = Some(last_sync.to_string());
+                                        doc.pending_deletion = doc_value.get("pending_deletion")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+                                        migrated_count += 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        if migrated_count > 0 {
+                            // Save migrated config
+                            config.save()?;
+
+                            // Remove old state.json
+                            let _ = fs::remove_file(&state_path);
+
+                            // Try to remove .docuram directory if empty
+                            let docuram_dir = PathBuf::from(".docuram");
+                            if let Ok(mut entries) = fs::read_dir(&docuram_dir) {
+                                if entries.next().is_none() {
+                                    let _ = fs::remove_dir(&docuram_dir);
+                                }
+                            }
+
+                            println!("Migrated {} document(s) from state.json to docuram.json", migrated_count);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(config)
     }
 }

@@ -5,10 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use dialoguer::Confirm;
 
-use crate::api::ApiClient;
-use crate::api::client::DocumentInfo;
-use crate::config::CliConfig;
-use crate::utils::{storage::LocalState, write_file, logger, calculate_checksum};
+use crate::api::{ApiClient, PublicApiClient};
+use crate::config::{CliConfig, DocuramConfig, DocumentInfo, PublicDependency};
+use crate::utils::{write_file, logger, calculate_checksum};
 
 pub async fn execute(config_url: Option<String>, force: bool, no_download: bool) -> Result<()> {
     println!("{}", style("Initialize Docuram Project").cyan().bold());
@@ -52,7 +51,7 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
 
     // Download docuram config
     println!("Downloading configuration from {}...", style(&config_source).cyan());
-    let docuram_config = client.get_docuram_config(&config_source).await?;
+    let api_config = client.get_docuram_config(&config_source).await?;
 
     // Ensure docuram directory exists
     fs::create_dir_all("docuram")
@@ -60,13 +59,17 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
 
     // Save docuram.json
     println!("Saving {}...", style("docuram.json").cyan());
-    let config_json = serde_json::to_string_pretty(&docuram_config)
+    let config_json = serde_json::to_string_pretty(&api_config)
         .context("Failed to serialize config")?;
     fs::write(&config_path, config_json)
         .context("Failed to write docuram.json")?;
 
     println!("{}", style("✓ Configuration saved").green());
     println!();
+
+    // Reload config as our local DocuramConfig type (with local state fields)
+    let docuram_config = DocuramConfig::load()
+        .context("Failed to reload docuram.json")?;
 
     // Display project info
     println!("{}", style("Project Information:").bold());
@@ -164,23 +167,31 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
             .progress_chars("=> ")
     );
 
-    // Initialize local state
-    let mut local_state = LocalState::default();
+    // Make docuram_config mutable for updating local state fields
+    let mut docuram_config = docuram_config;
 
     // Download all documents (working documents + dependencies)
     let mut success_count = 0;
     let mut failed_docs = Vec::new();
 
-    for doc_info in docuram_config.all_documents() {
-        pb.set_message(format!("{}", doc_info.title));
+    // Collect UUIDs to download
+    let uuids_to_download: Vec<String> = docuram_config.all_documents()
+        .map(|d| d.uuid.clone())
+        .collect();
 
-        let working_category_path = &docuram_config.docuram.category_path;
-        match download_document(&client, doc_info, &mut local_state, working_category_path).await {
+    for doc_uuid in &uuids_to_download {
+        let title = docuram_config.get_document_by_uuid(doc_uuid)
+            .map(|d| d.title.clone())
+            .unwrap_or_default();
+        pb.set_message(format!("{}", title));
+
+        let working_category_path = docuram_config.docuram.category_path.clone();
+        match download_document(&client, doc_uuid, &mut docuram_config, &working_category_path).await {
             Ok(_) => {
                 success_count += 1;
             }
             Err(e) => {
-                failed_docs.push((doc_info.uuid.clone(), e.to_string()));
+                failed_docs.push((doc_uuid.clone(), e.to_string()));
             }
         }
 
@@ -189,9 +200,9 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
 
     pb.finish_with_message("Done");
 
-    // Save local state
-    local_state.save()
-        .context("Failed to save local state")?;
+    // Save docuram config with updated local state fields
+    docuram_config.save()
+        .context("Failed to save docuram.json")?;
 
     println!();
     if failed_docs.is_empty() {
@@ -203,6 +214,10 @@ pub async fn execute(config_url: Option<String>, force: bool, no_download: bool)
             println!("  - {}: {}", slug, error);
         }
     }
+
+    // Fetch and download public dependencies from docuram.teamturbo.io
+    println!();
+    fetch_public_dependencies(&mut docuram_config).await?;
 
     println!();
     println!("{}", style("Project initialized successfully!").green().bold());
@@ -256,18 +271,20 @@ fn extract_server_url(config_url: &str) -> Result<String> {
 /// Download a single document
 async fn download_document(
     client: &ApiClient,
-    doc_info: &DocumentInfo,
-    local_state: &mut LocalState,
+    doc_uuid: &str,
+    docuram_config: &mut DocuramConfig,
     working_category_path: &str,
 ) -> Result<()> {
     // Download document content
-    logger::debug("download", &format!("Fetching document: {}", doc_info.uuid));
-    let doc = client.download_document(&doc_info.uuid).await?;
+    logger::debug("download", &format!("Fetching document: {}", doc_uuid));
+    let doc = client.download_document(doc_uuid).await?;
 
     let content = doc.content.unwrap_or_default();
     logger::debug("download", &format!("Document size: {} bytes", content.len()));
 
-    // Use local_path() to get correct path (dependencies go in working_category/dependencies/ subdirectory)
+    // Get document info to calculate local path
+    let doc_info = docuram_config.get_document_by_uuid(doc_uuid)
+        .context("Document not found in config")?;
     let local_file_path = doc_info.local_path(working_category_path);
     let file_path = PathBuf::from(&local_file_path);
 
@@ -275,25 +292,139 @@ async fn download_document(
         .with_context(|| format!("Failed to write document to {:?}", file_path))?;
     logger::debug("download", &format!("Saved to: {:?}", file_path));
 
-    // Calculate checksum of the actual file content (without metadata)
+    // Calculate checksum of the actual file content
     let actual_checksum = calculate_checksum(&content);
 
-    // Update local state with complete metadata
-    local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
-        uuid: doc_info.uuid.clone(),
-        path: local_file_path,
-        checksum: actual_checksum,
-        version: doc_info.version,
-        last_sync: chrono::Utc::now().to_rfc3339(),
-        title: doc_info.title.clone(),
-        category_path: doc_info.category_path.clone(),
-        category_uuid: doc_info.category_uuid.clone(),
-        doc_type: doc_info.doc_type.clone(),
-        description: None,
-        priority: None,
-        is_required: doc_info.is_required,
-        pending_deletion: false,
-    });
+    // Update document's local state in docuram config
+    if let Some(doc_mut) = docuram_config.get_document_by_uuid_mut(doc_uuid) {
+        doc_mut.local_checksum = Some(actual_checksum);
+        doc_mut.last_sync = Some(chrono::Utc::now().to_rfc3339());
+        doc_mut.version = doc.version;
+        doc_mut.pending_deletion = false;
+    }
+
+    Ok(())
+}
+
+/// Fetch and download public dependencies from docuram.teamturbo.io
+async fn fetch_public_dependencies(docuram_config: &mut DocuramConfig) -> Result<()> {
+    println!("{}", style("Fetching public dependencies from Docuram Official...").bold());
+
+    let public_client = PublicApiClient::new(PublicApiClient::default_url().to_string());
+
+    // Fetch global dependencies list
+    let global_deps = match public_client.get_global_dependencies().await {
+        Ok(deps) => deps,
+        Err(e) => {
+            println!("{}", style(format!("⚠ Could not fetch public dependencies: {}", e)).yellow());
+            println!("{}", style("  (This is optional - your project will work without public dependencies)").dim());
+            return Ok(());
+        }
+    };
+
+    if global_deps.global_dependencies.is_empty() {
+        println!("{}", style("  No public dependencies available").dim());
+        return Ok(());
+    }
+
+    println!("{}", style(format!("Found {} public dependency categor(ies)", global_deps.global_dependencies.len())).dim());
+
+    // Use dependencies directory for public dependencies as well
+    let deps_dir = PathBuf::from("dependencies");
+    if !deps_dir.exists() {
+        fs::create_dir_all(&deps_dir)
+            .context("Failed to create dependencies directory")?;
+    }
+
+    let mut total_docs_downloaded = 0;
+    let mut public_deps_list: Vec<PublicDependency> = Vec::new();
+
+    for dep_category in &global_deps.global_dependencies {
+        println!();
+        println!("{}", style(format!("Downloading: {} ({} documents)", dep_category.name, dep_category.document_count)).cyan());
+
+        // Download the dependency's documents
+        let download_result = match public_client.download_global_dependency(&dep_category.uuid).await {
+            Ok(result) => result,
+            Err(e) => {
+                println!("{}", style(format!("  ⚠ Failed to download {}: {}", dep_category.name, e)).yellow());
+                continue;
+            }
+        };
+
+        // Create directory for this dependency
+        let dep_dir = deps_dir.join(&dep_category.path);
+        if !dep_dir.exists() {
+            fs::create_dir_all(&dep_dir)
+                .with_context(|| format!("Failed to create directory for {}", dep_category.name))?;
+        }
+
+        // Download each document
+        let mut dep_documents: Vec<DocumentInfo> = Vec::new();
+        for doc in &download_result.documents {
+            let content = doc.content.clone().unwrap_or_default();
+
+            // Build local path: dependencies/<category_path>/<subcategory>/<filename>
+            let relative_path = doc.path.strip_prefix("docuram/").unwrap_or(&doc.path);
+            let local_path = deps_dir.join(relative_path);
+
+            // Ensure parent directory exists
+            if let Some(parent) = local_path.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+
+            // Write the document
+            write_file(&local_path, &content)
+                .with_context(|| format!("Failed to write document: {:?}", local_path))?;
+
+            // Calculate checksum
+            let checksum = calculate_checksum(&content);
+
+            // Create DocumentInfo for this public dependency document
+            let doc_info = DocumentInfo {
+                id: doc.id,
+                uuid: doc.uuid.clone(),
+                title: doc.title.clone(),
+                category_id: doc.category_id,
+                category_name: doc.category_name.clone(),
+                category_path: doc.category_path.clone(),
+                category_uuid: doc.category_uuid.clone(),
+                doc_type: doc.doc_type.clone(),
+                version: doc.version,
+                path: format!("dependencies/{}", relative_path),
+                checksum: doc.checksum.clone(),
+                is_required: true,
+                local_checksum: Some(checksum),
+                last_sync: Some(chrono::Utc::now().to_rfc3339()),
+                pending_deletion: false,
+            };
+            dep_documents.push(doc_info);
+            total_docs_downloaded += 1;
+        }
+
+        // Create PublicDependency entry
+        let public_dep = PublicDependency {
+            category_uuid: dep_category.uuid.clone(),
+            category_name: dep_category.name.clone(),
+            category_path: dep_category.path.clone(),
+            source_url: global_deps.source.url.clone(),
+            document_count: dep_documents.len() as i64,
+            documents: dep_documents,
+        };
+        public_deps_list.push(public_dep);
+
+        println!("{}", style(format!("  ✓ Downloaded {} documents", download_result.documents.len())).green());
+    }
+
+    // Update docuram config with public dependencies
+    docuram_config.public_dependencies = public_deps_list;
+    docuram_config.save()
+        .context("Failed to save docuram.json with public dependencies")?;
+
+    println!();
+    println!("{}", style(format!("✓ Downloaded {} public dependency document(s)", total_docs_downloaded)).green());
 
     Ok(())
 }

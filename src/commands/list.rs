@@ -2,93 +2,118 @@ use anyhow::Result;
 use console::style;
 use std::path::Path;
 use std::collections::{HashSet, HashMap};
+use walkdir::WalkDir;
 use crate::config::{DocuramConfig, CliConfig};
-use crate::utils::storage::LocalState;
 use crate::utils;
-use crate::api::ApiClient;
+use crate::api::{ApiClient, PublicApiClient};
+
+/// Simple struct representing a new local document
+struct NewLocalDocument {
+    file_path: String,
+    title: String,
+}
+
+/// Scan docuram/ directory for markdown files
+fn scan_markdown_files(dir: &str) -> Result<Vec<NewLocalDocument>> {
+    let mut documents = Vec::new();
+
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+
+        // Skip hidden files and directories
+        if path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Only process .md files
+        if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+
+        // Extract title from filename (without .md extension for display)
+        let title = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        documents.push(NewLocalDocument {
+            file_path: path.to_string_lossy().to_string(),
+            title,
+        });
+    }
+
+    Ok(documents)
+}
 
 pub async fn execute() -> Result<()> {
     println!("{}", style("Document List").cyan().bold());
     println!();
 
-    // Load docuram config
-    let docuram_config = DocuramConfig::load()?;
+    // Load docuram config with migration from state.json
+    let mut docuram_config = DocuramConfig::load_with_migration()?;
 
     // Get working category path
-    let working_category_path = &docuram_config.docuram.category_path;
-
-    // Load local state (mutable for auto-marking missing files)
-    let mut local_state = LocalState::load()?;
+    let working_category_path = &docuram_config.docuram.category_path.clone();
 
     // Auto-detect missing files and mark them as pending deletion
-    let mut state_changed = false;
-    for doc_info in local_state.documents.values_mut() {
-        if !doc_info.pending_deletion {
-            let file_path = Path::new(&doc_info.path);
+    let mut config_changed = false;
+    for doc in docuram_config.all_documents_mut() {
+        // Only check documents that have been synced (have local_checksum)
+        if !doc.pending_deletion && doc.local_checksum.is_some() {
+            let local_file_path = doc.local_path(working_category_path);
+            let file_path = Path::new(&local_file_path);
             if !file_path.exists() {
                 // File is missing - mark for deletion
-                doc_info.pending_deletion = true;
-                state_changed = true;
+                doc.pending_deletion = true;
+                config_changed = true;
                 println!("{} File missing, marked for deletion: {}",
-                    style("⚠").yellow(), doc_info.path);
+                    style("⚠").yellow(), local_file_path);
             }
         }
     }
 
-    // Save state if any changes were made
-    if state_changed {
-        local_state.save()?;
+    // Save config if any changes were made
+    if config_changed {
+        docuram_config.save()?;
         println!();
     }
 
     // Try to fetch remote documents and versions
     let (remote_versions, remote_docs) = fetch_remote_documents(&docuram_config).await;
 
-    // Scan docuram directory for new local documents with front matter
-    let new_docs_with_meta = match utils::scan_documents_with_meta("docuram") {
+    // Scan docuram directory for new local documents (by comparing files vs JSON)
+    let new_local_docs = match scan_markdown_files("docuram") {
         Ok(docs) => {
-            // Build a set of file paths from docuram.json for quick lookup
+            // Build a set of LOCAL file paths from docuram.json for quick lookup
+            // Use local_path() to convert server paths to local file system paths
             let docuram_paths: HashSet<String> = docuram_config
                 .all_documents()
+                .map(|d| d.local_path(working_category_path))
+                .collect();
+
+            // Build a set of file paths from local_documents
+            let local_doc_paths: HashSet<String> = docuram_config
+                .local_documents
+                .iter()
                 .map(|d| d.path.clone())
                 .collect();
 
-            // Build a set of file paths from state.json
-            let state_paths: HashSet<String> = local_state
-                .documents
-                .values()
-                .map(|doc_info| doc_info.path.clone())
-                .collect();
-
-            // Build a set of UUIDs from docuram.json (if the frontmatter has uuid)
-            let docuram_uuids: HashSet<String> = docuram_config
-                .all_documents()
-                .map(|d| d.uuid.clone())
-                .collect();
-
-            // Build a set of UUIDs from state.json
-    let state_uuids: HashSet<String> = local_state
-        .documents
-        .values()
-        .map(|doc_info| doc_info.uuid.clone())
-        .collect();
-
-            // Filter: new documents are those NOT in docuram.json AND NOT in state.json
+            // Filter: new documents are those NOT in docuram.json AND NOT in local_documents (by path)
             docs.into_iter()
                 .filter(|d| {
-                    let in_docuram_by_path = docuram_paths.contains(&d.file_path);
-                    let in_state_by_path = state_paths.contains(&d.file_path);
+                    let in_docuram = docuram_paths.contains(&d.file_path);
+                    let in_local = local_doc_paths.contains(&d.file_path);
 
-                    // If document has UUID in frontmatter, also check by UUID
-                    let in_docuram_by_uuid = d.front_matter.uuid.as_ref()
-                        .map(|uuid| docuram_uuids.contains(uuid))
-                        .unwrap_or(false);
-                    let in_state_by_uuid = d.front_matter.uuid.as_ref()
-                        .map(|uuid| state_uuids.contains(uuid))
-                        .unwrap_or(false);
-
-                    // Document is new if it's not found by path OR uuid
-                    !in_docuram_by_path && !in_state_by_path && !in_docuram_by_uuid && !in_state_by_uuid
+                    // Document is new if not found by path in either array
+                    !in_docuram && !in_local
                 })
                 .collect::<Vec<_>>()
         }
@@ -102,26 +127,13 @@ pub async fn execute() -> Result<()> {
     // Collect all documents with their status
     let all_docs: Vec<_> = docuram_config.all_documents().collect();
 
-    // Collect documents that are in state.json but not in docuram.json
-    // Also collect documents marked for deletion (they should still be displayed)
-    let mut state_only_docs = Vec::new();
-    let mut pending_deletion_docs = Vec::new();
+    // Collect pending deletion documents (they should still be displayed with special styling)
+    let pending_deletion_docs: Vec<_> = all_docs.iter()
+        .filter(|doc| doc.pending_deletion)
+        .collect();
 
-    for doc_info in local_state.documents.values() {
-        let in_docuram = all_docs.iter().any(|d| d.uuid == doc_info.uuid);
-
-        if doc_info.pending_deletion && !in_docuram {
-            // Collect pending deletion documents that are NOT in docuram.json
-            // Documents in docuram.json will be displayed from all_docs with "Pending deletion" status
-            pending_deletion_docs.push(doc_info.clone());
-        } else if !in_docuram && !doc_info.pending_deletion {
-            // Not in docuram.json and not pending deletion
-            let file_path = Path::new(&doc_info.path);
-            if file_path.exists() {
-                state_only_docs.push(doc_info.clone());
-            }
-        }
-    }
+    // No more state_only_docs since all synced documents are now in docuram.json
+    let state_only_docs: Vec<&crate::config::DocumentInfo> = Vec::new();
 
     // Find remote documents that are not in local docuram.json
     let mut remote_new_docs = Vec::new();
@@ -136,9 +148,9 @@ pub async fn execute() -> Result<()> {
                 continue;
             }
 
-            // Skip if marked for deletion in state.json
-            if let Some(state_doc) = local_state.get_document_by_uuid(&remote_doc.uuid) {
-                if state_doc.pending_deletion {
+            // Skip if marked for deletion (already in docuram.json)
+            if let Some(local_doc) = docuram_config.get_document_by_uuid(&remote_doc.uuid) {
+                if local_doc.pending_deletion {
                     continue;
                 }
             }
@@ -147,29 +159,24 @@ pub async fn execute() -> Result<()> {
         }
     }
 
-    let total_count = all_docs.len() + new_docs_with_meta.len() + state_only_docs.len() + remote_new_docs.len() + pending_deletion_docs.len();
+    // Note: pending_deletion_docs are already included in all_docs, so don't double-count
+    let total_count = all_docs.len() + new_local_docs.len() + remote_new_docs.len();
     if total_count == 0 {
         println!("{}", style("No documents found").yellow());
         return Ok(());
     }
 
-    println!("{}", style(format!("Total documents: {} ({} in docuram.json, {} pushed but not in config, {} new local, {} new on server, {} pending deletion)",
-        total_count, all_docs.len(), state_only_docs.len(), new_docs_with_meta.len(), remote_new_docs.len(), pending_deletion_docs.len())).bold());
+    println!("{}", style(format!("Total documents: {} ({} in docuram.json, {} new local, {} new on server, {} pending deletion)",
+        total_count, all_docs.len(), new_local_docs.len(), remote_new_docs.len(), pending_deletion_docs.len())).bold());
     println!();
 
     // Build a tree structure grouped by category
-    let mut tree: HashMap<String, Vec<DocumentInfo>> = HashMap::new();
+    let mut tree: HashMap<String, Vec<ListDocumentInfo>> = HashMap::new();
 
     // Group documents by actual file directory path (not category_path)
     for doc in &all_docs {
-        // Check if we have local state for this document (to get actual file path)
-        let actual_file_path = if let Some(local_doc) = local_state.get_document_by_uuid(&doc.uuid) {
-            // Use actual file path from state.json if available
-            local_doc.path.clone()
-        } else {
-            // Otherwise use generated path
-            doc.local_path(working_category_path)
-        };
+        // Use the path stored in docuram.json (was migrated from state.json if applicable)
+        let actual_file_path = doc.local_path(working_category_path);
 
         // Extract directory path from actual file path (preserve full path for tree display)
         let file_path = Path::new(&actual_file_path);
@@ -178,7 +185,7 @@ pub async fn execute() -> Result<()> {
         } else {
             "Unknown".to_string()
         };
-        
+
         // Get actual filename from file path (preserving case)
         let actual_filename = file_path.file_name()
             .and_then(|s| s.to_str())
@@ -187,18 +194,20 @@ pub async fn execute() -> Result<()> {
 
         tree.entry(dir_path)
             .or_insert_with(Vec::new)
-            .push(DocumentInfo {
+            .push(ListDocumentInfo {
                 title: actual_filename,
                 uuid: doc.uuid.clone(),
                 doc_type: doc.doc_type.clone(),
-                status: get_document_status(&doc.uuid, &actual_file_path, &local_state),
-                local_version: get_local_version(&doc.uuid, &local_state),
+                status: get_document_status_from_doc(doc, &actual_file_path),
+                local_version: get_local_version_from_doc(doc),
                 remote_version: get_remote_version(&doc.uuid, &remote_versions),
                 source: DocumentSource::Docuram,
+                is_public: false,
             });
     }
 
-    // Add state-only documents
+    // state_only_docs is now empty since all synced documents are in docuram.json
+    // Keep the loop for compatibility, but it won't execute
     for state_doc in &state_only_docs {
         let file_path = Path::new(&state_doc.path);
         let title = file_path
@@ -215,7 +224,7 @@ pub async fn execute() -> Result<()> {
 
         tree.entry(category)
             .or_insert_with(Vec::new)
-            .push(DocumentInfo {
+            .push(ListDocumentInfo {
                 title,
                 uuid: state_doc.uuid.clone(),
                 doc_type: "?".to_string(),
@@ -223,37 +232,39 @@ pub async fn execute() -> Result<()> {
                 local_version: state_doc.version.to_string(),
                 remote_version: get_remote_version(&state_doc.uuid, &remote_versions),
                 source: DocumentSource::StateOnly,
+                is_public: false,
             });
     }
 
     // Add new local documents
-        for new_doc in &new_docs_with_meta {
-            // Extract directory path from the actual file path (preserve full path)
-            let file_path = Path::new(&new_doc.file_path);
-            let dir_path = if let Some(parent) = file_path.parent() {
-                parent.to_str().unwrap_or("Unknown").to_string()
-            } else {
-                "Unknown".to_string()
-            };
-            
-            // Get original filename without extension (preserving case)
-            let original_filename = file_path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string();
+    for new_doc in &new_local_docs {
+        // Extract directory path from the actual file path (preserve full path)
+        let file_path = Path::new(&new_doc.file_path);
+        let dir_path = if let Some(parent) = file_path.parent() {
+            parent.to_str().unwrap_or("Unknown").to_string()
+        } else {
+            "Unknown".to_string()
+        };
 
-            tree.entry(dir_path)
-                .or_insert_with(Vec::new)
-                .push(DocumentInfo {
-                    title: original_filename,
-                    uuid: String::new(),
-                    doc_type: new_doc.front_matter.doc_type.clone().unwrap_or_else(|| "knowledge".to_string()),
-                    status: "New".to_string(),
-                    local_version: "-".to_string(),
-                    remote_version: "-".to_string(),
-                    source: DocumentSource::New,
-                });
-        }
+        // Get original filename without extension (preserving case)
+        let original_filename = file_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+
+        tree.entry(dir_path)
+            .or_insert_with(Vec::new)
+            .push(ListDocumentInfo {
+                title: original_filename,
+                uuid: String::new(),
+                doc_type: "knowledge".to_string(),
+                status: "New".to_string(),
+                local_version: "-".to_string(),
+                remote_version: "-".to_string(),
+                source: DocumentSource::New,
+                is_public: false,
+            });
+    }
 
     // Add remote new documents (on server but not in local docuram.json)
     for remote_doc in &remote_new_docs {
@@ -270,7 +281,7 @@ pub async fn execute() -> Result<()> {
 
         tree.entry(dir_path)
             .or_insert_with(Vec::new)
-            .push(DocumentInfo {
+            .push(ListDocumentInfo {
                 title: remote_doc.title.clone(),
                 uuid: remote_doc.uuid.clone(),
                 doc_type: remote_doc.doc_type.clone(),
@@ -278,34 +289,83 @@ pub async fn execute() -> Result<()> {
                 local_version: "-".to_string(),
                 remote_version: remote_doc.version.to_string(),
                 source: DocumentSource::Remote,
+                is_public: false,
             });
     }
 
-    // Add pending deletion documents
-    for pending_doc in &pending_deletion_docs {
-        let file_path = Path::new(&pending_doc.path);
-        let title = file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
+    // Pending deletion documents are already included in all_docs
+    // The status is determined by get_document_status_from_doc() based on pending_deletion flag
+    // No need to add them separately
 
-        let category = if let Some(parent) = file_path.parent() {
-            parent.to_str().unwrap_or("Unknown").to_string()
-        } else {
-            "Unknown".to_string()
-        };
+    // Fetch remote public dependencies for version comparison
+    let (public_remote_versions, public_new_docs) = fetch_public_dependencies_info(&docuram_config).await;
 
-        tree.entry(category)
+    // Build set of existing public doc UUIDs
+    let existing_public_uuids: HashSet<String> = docuram_config.public_dependencies
+        .iter()
+        .flat_map(|dep| dep.documents.iter().map(|d| d.uuid.clone()))
+        .collect();
+
+    // Add public dependencies from public_dependencies array
+    for public_dep in &docuram_config.public_dependencies {
+        for doc in &public_dep.documents {
+            // Extract directory path from document path
+            let file_path = Path::new(&doc.path);
+            let dir_path = if let Some(parent) = file_path.parent() {
+                parent.to_str().unwrap_or("dependencies").to_string()
+            } else {
+                "dependencies".to_string()
+            };
+
+            // Get actual filename from file path
+            let actual_filename = file_path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&doc.title)
+                .to_string();
+
+            // Check document status
+            let status = get_document_status_from_doc(doc, &doc.path);
+
+            // Get remote version for public dependency
+            let remote_ver = public_remote_versions
+                .get(&doc.uuid)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| doc.version.to_string());
+
+            tree.entry(dir_path)
+                .or_insert_with(Vec::new)
+                .push(ListDocumentInfo {
+                    title: actual_filename,
+                    uuid: doc.uuid.clone(),
+                    doc_type: doc.doc_type.clone(),
+                    status,
+                    local_version: doc.version.to_string(),
+                    remote_version: remote_ver,
+                    source: DocumentSource::Docuram,
+                    is_public: true,
+                });
+        }
+    }
+
+    // Add new public documents (on remote but not local)
+    for (category_path, doc) in &public_new_docs {
+        if existing_public_uuids.contains(&doc.uuid) {
+            continue;
+        }
+
+        let dir_path = format!("dependencies/{}/{}", category_path, doc.category_name);
+
+        tree.entry(dir_path)
             .or_insert_with(Vec::new)
-            .push(DocumentInfo {
-                title,
-                uuid: pending_doc.uuid.clone(),
-                doc_type: "?".to_string(),
-                status: "Pending deletion".to_string(),
-                local_version: pending_doc.version.to_string(),
-                remote_version: get_remote_version(&pending_doc.uuid, &remote_versions),
-                source: DocumentSource::StateOnly,
+            .push(ListDocumentInfo {
+                title: doc.title.clone(),
+                uuid: doc.uuid.clone(),
+                doc_type: doc.doc_type.clone(),
+                status: "Remote".to_string(),
+                local_version: "-".to_string(),
+                remote_version: doc.version.to_string(),
+                source: DocumentSource::Remote,
+                is_public: true,
             });
     }
 
@@ -338,13 +398,14 @@ pub async fn execute() -> Result<()> {
     println!("  {} - New document on server (run 'teamturbo pull' to download)", style("⬇ Remote").blue().bold());
     println!("  {} - File deleted, pending server sync (run 'teamturbo push' to delete from server)", style("🗑 Pending deletion").red().dim());
     println!("  {} - Remote version has updates available", style("[v1→v2]").yellow());
+    println!("  {} - Public dependency from docuram.teamturbo.io", style("[PUBLIC]").magenta().bold());
     println!();
 
     Ok(())
 }
 
 // Helper structures
-struct DocumentInfo {
+struct ListDocumentInfo {
     title: String,
     uuid: String,
     doc_type: String,
@@ -352,6 +413,7 @@ struct DocumentInfo {
     local_version: String,
     remote_version: String,
     source: DocumentSource,
+    is_public: bool,
 }
 
 enum DocumentSource {
@@ -362,20 +424,21 @@ enum DocumentSource {
 }
 
 // Helper functions
-fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> String {
-    if let Some(local_doc) = local_state.get_document_by_uuid(uuid) {
-        // Check if marked for deletion first
-        if local_doc.pending_deletion {
-            return "Pending deletion".to_string();
-        }
+fn get_document_status_from_doc(doc: &crate::config::DocumentInfo, path: &str) -> String {
+    // Check if marked for deletion first
+    if doc.pending_deletion {
+        return "Pending deletion".to_string();
+    }
 
+    // Check if document has been synced (has local_checksum)
+    if let Some(local_checksum) = &doc.local_checksum {
         let file_path = Path::new(path);
         if file_path.exists() {
             match utils::read_file(path) {
                 Ok(content) => {
                     // Calculate checksum of complete content
                     let current_checksum = utils::calculate_checksum(&content);
-                    if current_checksum == local_doc.checksum {
+                    if current_checksum == *local_checksum {
                         "Synced".to_string()
                     } else {
                         "Modified".to_string()
@@ -397,10 +460,12 @@ fn get_document_status(uuid: &str, path: &str, local_state: &LocalState) -> Stri
     }
 }
 
-fn get_local_version(uuid: &str, local_state: &LocalState) -> String {
-    local_state.get_document_by_uuid(uuid)
-        .map(|d| d.version.to_string())
-        .unwrap_or_else(|| "-".to_string())
+fn get_local_version_from_doc(doc: &crate::config::DocumentInfo) -> String {
+    if doc.local_checksum.is_some() {
+        doc.version.to_string()
+    } else {
+        "-".to_string()
+    }
 }
 
 fn get_remote_version(uuid: &str, remote_versions: &Result<HashMap<String, i64>>) -> String {
@@ -452,7 +517,7 @@ struct TreeNode {
 }
 
 /// Build hierarchical tree structure from flat category paths
-fn build_tree_structure(tree: &HashMap<String, Vec<DocumentInfo>>) -> Vec<TreeNode> {
+fn build_tree_structure(tree: &HashMap<String, Vec<ListDocumentInfo>>) -> Vec<TreeNode> {
     let mut all_paths: Vec<String> = tree.keys().cloned().collect();
     all_paths.sort();
 
@@ -537,7 +602,7 @@ fn get_parent_path(path: &str) -> Option<String> {
 /// Print tree node recursively
 fn print_tree_node(
     nodes: &[TreeNode],
-    tree: &HashMap<String, Vec<DocumentInfo>>,
+    tree: &HashMap<String, Vec<ListDocumentInfo>>,
     prefix: &str,
     is_root: bool,
 ) {
@@ -585,11 +650,19 @@ fn print_tree_node(
                         style(&doc.title).white()
                     };
 
-                    println!("{}{} {} {} {} {}",
+                    // Add [PUBLIC] marker for public dependencies
+                    let public_marker = if doc.is_public {
+                        style("[PUBLIC]").magenta().bold()
+                    } else {
+                        style("").white()
+                    };
+
+                    println!("{}{} {} {} {} {} {}",
                         node_prefix,
                         style(doc_prefix).dim(),
                         style("📄").dim(),
                         title_styled,
+                        public_marker,
                         status_colored,
                         version_info
                     );
@@ -679,3 +752,59 @@ async fn fetch_remote_documents(docuram_config: &DocuramConfig) -> (Result<HashM
 //         }
 //     }
 // }
+
+/// Public dependency document info for list display
+struct PublicDocInfo {
+    uuid: String,
+    title: String,
+    category_name: String,
+    doc_type: String,
+    version: i64,
+}
+
+/// Fetch public dependencies info from docuram.teamturbo.io
+/// Returns: (version map, list of new documents with their category paths)
+async fn fetch_public_dependencies_info(docuram_config: &DocuramConfig) -> (HashMap<String, i64>, Vec<(String, PublicDocInfo)>) {
+    let public_client = PublicApiClient::new(PublicApiClient::default_url().to_string());
+
+    // Fetch global dependencies list
+    let global_deps = match public_client.get_global_dependencies().await {
+        Ok(deps) => deps,
+        Err(_) => return (HashMap::new(), Vec::new()),
+    };
+
+    let mut version_map: HashMap<String, i64> = HashMap::new();
+    let mut new_docs: Vec<(String, PublicDocInfo)> = Vec::new();
+
+    // Build set of existing local public doc UUIDs
+    let existing_uuids: HashSet<String> = docuram_config.public_dependencies
+        .iter()
+        .flat_map(|dep| dep.documents.iter().map(|d| d.uuid.clone()))
+        .collect();
+
+    for dep_category in &global_deps.global_dependencies {
+        // Download the dependency's documents to get versions
+        let download_result = match public_client.download_global_dependency(&dep_category.uuid).await {
+            Ok(result) => result,
+            Err(_) => continue,
+        };
+
+        for doc in &download_result.documents {
+            // Add to version map
+            version_map.insert(doc.uuid.clone(), doc.version);
+
+            // Check if this is a new document
+            if !existing_uuids.contains(&doc.uuid) {
+                new_docs.push((dep_category.path.clone(), PublicDocInfo {
+                    uuid: doc.uuid.clone(),
+                    title: doc.title.clone(),
+                    category_name: doc.category_name.clone(),
+                    doc_type: doc.doc_type.clone(),
+                    version: doc.version,
+                }));
+            }
+        }
+    }
+
+    (version_map, new_docs)
+}

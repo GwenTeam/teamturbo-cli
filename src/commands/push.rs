@@ -4,18 +4,73 @@ use dialoguer::Input;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use walkdir::WalkDir;
 
 use crate::api::ApiClient;
 use crate::api::client::{DocumentUpdate, DocumentCreate};
-use crate::config::{CliConfig, DocuramConfig};
-use crate::utils::{storage::LocalState, read_file, calculate_checksum, scan_documents_with_meta, update_front_matter};
+use crate::config::{CliConfig, DocuramConfig, DocumentInfo};
+use crate::utils::{read_file, calculate_checksum};
+
+/// Simple struct representing a new document (no frontmatter)
+struct NewDocument {
+    file_path: String,
+    content: String,
+    title: String,
+}
+
+/// Scan docuram/ directory for markdown files
+fn scan_markdown_files(dir: &str) -> Result<Vec<NewDocument>> {
+    let mut documents = Vec::new();
+
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+
+        // Skip hidden files and directories
+        if path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Only process .md files
+        if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+
+        // Read file content
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Extract title from filename (with .md extension for server)
+        let filename = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled");
+        let title = format!("{}.md", filename);
+
+        documents.push(NewDocument {
+            file_path: path.to_string_lossy().to_string(),
+            content,
+            title,
+        });
+    }
+
+    Ok(documents)
+}
 
 pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<()> {
     println!("{}", style("Push Document Changes").cyan().bold());
     println!();
 
-    // Load docuram config (mutable for removing deleted documents)
-    let mut docuram_config = DocuramConfig::load()
+    // Load docuram config with migration from state.json
+    let mut docuram_config = DocuramConfig::load_with_migration()
         .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Load CLI config
@@ -31,16 +86,16 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
     // Create API client
     let client = ApiClient::new(server_url.clone(), auth.access_token.clone());
 
-    // Load local state
-    let mut local_state = LocalState::load()?;
-
     // Auto-detect missing files and mark them as pending deletion
     let mut newly_marked_count = 0;
-    for doc_info in local_state.documents.values_mut() {
-        if !doc_info.pending_deletion {
-            let file_path = std::path::Path::new(&doc_info.path);
+    let working_category_path_for_check = docuram_config.docuram.category_path.clone();
+    for doc in docuram_config.all_documents_mut() {
+        if !doc.pending_deletion && doc.local_checksum.is_some() {
+            // Get the correct local path for this document
+            let local_file_path = doc.local_path(&working_category_path_for_check);
+            let file_path = std::path::Path::new(&local_file_path);
             if !file_path.exists() {
-                doc_info.pending_deletion = true;
+                doc.pending_deletion = true;
                 newly_marked_count += 1;
             }
         }
@@ -48,15 +103,13 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
     if newly_marked_count > 0 {
         println!("{}", style(format!("Detected {} missing file(s), marked for deletion", newly_marked_count)).yellow());
-        local_state.save()?;
+        docuram_config.save()?;
     }
 
     // First, process documents marked for deletion
-    let pending_deletions: Vec<_> = local_state
-        .documents
-        .values()
-        .filter(|doc| doc.pending_deletion)
-        .cloned()
+    let pending_deletions: Vec<_> = docuram_config.get_pending_deletions()
+        .into_iter()
+        .map(|d| (d.uuid.clone(), d.path.clone()))
         .collect();
 
     if !pending_deletions.is_empty() {
@@ -67,35 +120,28 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         let mut deleted_uuids = Vec::new();
         let mut failed_deletions = Vec::new();
 
-        for doc_info in &pending_deletions {
-            match client.delete_document(&doc_info.uuid).await {
+        for (uuid, path) in &pending_deletions {
+            match client.delete_document(uuid).await {
                 Ok(_) => {
-                    println!("  {} Deleted from server: {}", style("✓").green(), doc_info.path);
-
-                    // Remove from state.json after successful deletion
-                    // Use path as key since HashMap is keyed by path, not UUID
-                    local_state.remove_document(&doc_info.path);
-                    deleted_uuids.push(doc_info.uuid.clone());
+                    println!("  {} Deleted from server: {}", style("✓").green(), path);
+                    deleted_uuids.push(uuid.clone());
                     deleted_count += 1;
                 }
                 Err(e) => {
                     println!("  {} Failed to delete from server: {} - {}",
-                        style("✗").red(), doc_info.path, e);
-                    failed_deletions.push((doc_info.uuid.clone(), e.to_string()));
+                        style("✗").red(), path, e);
+                    failed_deletions.push((uuid.clone(), e.to_string()));
                 }
             }
         }
 
         // Remove deleted documents from docuram.json
         if !deleted_uuids.is_empty() {
-            let deleted_set: HashSet<String> = deleted_uuids.into_iter().collect();
-            docuram_config.documents.retain(|d| !deleted_set.contains(&d.uuid));
-            docuram_config.requires.retain(|d| !deleted_set.contains(&d.uuid));
+            for uuid in &deleted_uuids {
+                docuram_config.remove_document_by_uuid(uuid);
+            }
             docuram_config.save()?;
         }
-
-        // Save state after deletions
-        local_state.save()?;
 
         println!();
         println!("{}", style(format!("✓ {} document(s) deleted from server", deleted_count)).green().bold());
@@ -106,9 +152,9 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         println!();
     }
 
-    // Scan docuram directory for new documents with front matter
+    // Scan docuram directory for new documents (by comparing files vs JSON)
     println!("{}", style("Scanning docuram/ directory for new documents...").cyan());
-    let new_docs_with_meta = match scan_documents_with_meta("docuram") {
+    let all_md_files = match scan_markdown_files("docuram") {
         Ok(docs) => docs,
         Err(_) => {
             println!("{}", style("No docuram/ directory found, skipping new document scan").yellow());
@@ -116,38 +162,26 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         }
     };
 
-    // Build a set of file paths from docuram.json for quick lookup
-    // Only use 'documents', not 'requires' (requires are read-only dependencies)
+    // Get working category path for local_path() conversion
+    let working_category_path = &docuram_config.docuram.category_path;
+
+    // Build a set of LOCAL file paths from docuram.json for quick lookup
+    // Use local_path() to convert server paths to local file system paths
     let docuram_paths: HashSet<String> = docuram_config
-        .documents
+        .all_documents()
+        .map(|d| d.local_path(working_category_path))
+        .collect();
+
+    // Build a set of file paths from local_documents
+    let local_doc_paths: HashSet<String> = docuram_config
+        .local_documents
         .iter()
         .map(|d| d.path.clone())
         .collect();
 
-    // Build a set of file paths from state.json
-    let state_paths: HashSet<String> = local_state
-        .documents
-        .values()
-        .map(|doc_info| doc_info.path.clone())
-        .collect();
-
-    // Build a set of UUIDs from docuram.json and state.json (if document has uuid in frontmatter)
-    // Only use 'documents', not 'requires'
-    let docuram_uuids: HashSet<String> = docuram_config
-        .documents
-        .iter()
-        .map(|d| d.uuid.clone())
-        .collect();
-
-    let state_uuids: HashSet<String> = local_state
-        .documents
-        .keys()
-        .cloned()
-        .collect();
-
-    // Filter: new documents are those NOT in docuram.json AND NOT in state.json
+    // Filter: new documents are those NOT in docuram.json AND NOT in local_documents (by path)
     // Also exclude documents in dependencies/ directory (they are read-only)
-    let new_docs: Vec<_> = new_docs_with_meta
+    let new_docs: Vec<_> = all_md_files
         .into_iter()
         .filter(|d| {
             // Exclude documents in dependencies/ directory (at project root)
@@ -155,27 +189,19 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                 return false;
             }
 
-            // Check if file path is in docuram.json or state.json
-            let in_docuram_by_path = docuram_paths.contains(&d.file_path);
-            let in_state_by_path = state_paths.contains(&d.file_path);
+            // Check if file path is in docuram.json or local_documents
+            let in_docuram = docuram_paths.contains(&d.file_path);
+            let in_local = local_doc_paths.contains(&d.file_path);
 
-            // If document has UUID in frontmatter, also check by UUID
-            let in_docuram_by_uuid = d.front_matter.uuid.as_ref()
-                .map(|uuid| docuram_uuids.contains(uuid))
-                .unwrap_or(false);
-            let in_state_by_uuid = d.front_matter.uuid.as_ref()
-                .map(|uuid| state_uuids.contains(uuid))
-                .unwrap_or(false);
-
-            // Document is new if it's not found by path OR uuid
-            !in_docuram_by_path && !in_state_by_path && !in_docuram_by_uuid && !in_state_by_uuid
+            // Document is new if not found by path
+            !in_docuram && !in_local
         })
         .collect();
 
     if !new_docs.is_empty() {
-        println!("{}", style(format!("Found {} new document(s) with front matter:", new_docs.len())).bold());
+        println!("{}", style(format!("Found {} new document(s):", new_docs.len())).bold());
         for doc in &new_docs {
-            println!("  - {} ({})", doc.front_matter.title, doc.file_path);
+            println!("  - {} ({})", doc.title, doc.file_path);
         }
         println!();
     }
@@ -195,34 +221,8 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
             .collect()
     };
 
-    // Check for documents in state.json that are not in docuram.json
-    // These are documents that were created but docuram.json hasn't been updated
-    // NOTE: Skip dependency documents (requires) - they are read-only
-    let mut state_only_docs = Vec::new();
-    for (uuid, doc_info) in &local_state.documents {
-        // Check if this UUID is in docuram.json documents (not requires)
-        let in_docuram = docuram_config
-            .documents
-            .iter()
-            .any(|d| d.uuid == *uuid);
-
-        // Check if this UUID is in docuram.json requires (dependencies are read-only)
-        let in_requires = docuram_config
-            .requires
-            .iter()
-            .any(|d| d.uuid == *uuid);
-
-        if !in_docuram && !in_requires {
-            // This document is in state but not in docuram.json (and not a dependency)
-            let file_path = PathBuf::from(&doc_info.path);
-            if file_path.exists() {
-                state_only_docs.push(doc_info.clone());
-            }
-        }
-    }
-
-    if !docs_to_check.is_empty() || !state_only_docs.is_empty() {
-        println!("Checking {} document(s) for changes...", docs_to_check.len() + state_only_docs.len());
+    if !docs_to_check.is_empty() {
+        println!("Checking {} document(s) for changes...", docs_to_check.len());
         println!();
     } else if new_docs.is_empty() {
         println!("{}", style("No documents to push").yellow());
@@ -250,11 +250,11 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         let current_content = read_file(&file_path)?;
         let current_checksum = calculate_checksum(&current_content);
 
-        // Check if modified
-        let is_modified = match local_state.get_document_by_uuid(&doc_info.uuid) {
-            Some(local_info) => current_checksum != local_info.checksum,
+        // Check if modified by comparing with local_checksum (from last sync)
+        let is_modified = match &doc_info.local_checksum {
+            Some(local_cs) => current_checksum != *local_cs,
             None => {
-                // No local state, compare with remote checksum
+                // No local checksum, compare with remote checksum
                 current_checksum != doc_info.checksum
             }
         };
@@ -264,33 +264,6 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                 doc_info.uuid.clone(),
                 doc_info.title.clone(),
                 local_file_path,  // Use the local path we already computed
-                current_content,
-                current_checksum,
-            ));
-        }
-    }
-
-    // Check documents from state.json that are not in docuram.json
-    for state_doc in &state_only_docs {
-        let file_path = PathBuf::from(&state_doc.path);
-
-        // Read current content
-        let current_content = read_file(&file_path)?;
-        let current_checksum = calculate_checksum(&current_content);
-
-        // Check if modified compared to last sync
-        if current_checksum != state_doc.checksum {
-            // Extract title from file path for display
-            let title = file_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string();
-
-            to_push.push((
-                state_doc.uuid.clone(),
-                title,
-                state_doc.path.clone(),
                 current_content,
                 current_checksum,
             ));
@@ -365,25 +338,12 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
             match client.upload_document(&uuid, update).await {
                 Ok(updated_doc) => {
-                    // Use the version returned from server
-                    let version = updated_doc.version;
-
-                    // Update local state with server version and complete metadata
-                    local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
-                        uuid: uuid.clone(),
-                        path: path.clone(),
-                        checksum,
-                        version,
-                        last_sync: chrono::Utc::now().to_rfc3339(),
-                        title: title.clone(),  // Use title from the tuple
-                        category_path: docuram_config.docuram.category_path.clone(),  // Use category from config
-                        category_uuid: docuram_config.docuram.category_uuid.clone().unwrap_or_default(),  // Use category UUID from config
-                        doc_type: "knowledge".to_string(),  // Default doc type
-                        description: None,
-                        priority: None,
-                        is_required: false,  // Not required by default
-                        pending_deletion: false,
-                    });
+                    // Update document's local state in docuram config
+                    if let Some(doc_mut) = docuram_config.get_document_by_uuid_mut(&uuid) {
+                        doc_mut.local_checksum = Some(checksum.clone());
+                        doc_mut.last_sync = Some(chrono::Utc::now().to_rfc3339());
+                        doc_mut.version = updated_doc.version;
+                    }
                     success_count += 1;
                 }
                 Err(e) => {
@@ -418,7 +378,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         let working_category_path = &docuram_config.docuram.category_path;
 
         for new_doc in new_docs {
-            pb_new.set_message(format!("{}", new_doc.front_matter.title));
+            pb_new.set_message(format!("{}", new_doc.title));
 
             // Infer correct category path based on file location
             // If the file is in docuram/organic/, docuram/impl/, docuram/req/, or docuram/manual/,
@@ -435,16 +395,16 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                         // Standard docuram directory, prepend working category path
                         format!("{}/{}", working_category_path, parent_str)
                     } else {
-                        // Other directory, use category from front matter
-                        new_doc.front_matter.category.clone()
+                        // Other directory, use working category path
+                        working_category_path.to_string()
                     }
                 } else {
-                    // File at root of docuram/, use category from front matter
-                    new_doc.front_matter.category.clone()
+                    // File at root of docuram/, use working category path
+                    working_category_path.to_string()
                 }
             } else {
-                // Not in docuram/ directory, use category from front matter
-                new_doc.front_matter.category.clone()
+                // Not in docuram/ directory, use working category path
+                working_category_path.to_string()
             };
 
             // Get or create category by path
@@ -456,7 +416,7 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                         Ok(id) => id,
                         Err(e) => {
                             failed_new_docs.push((
-                                new_doc.front_matter.title.clone(),
+                                new_doc.title.clone(),
                                 format!("Failed to create category '{}': {}", category_path, e),
                             ));
                             pb_new.inc(1);
@@ -465,58 +425,66 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
                     }
                 }
                 Err(e) => {
-                    failed_new_docs.push((new_doc.front_matter.title.clone(), e.to_string()));
+                    failed_new_docs.push((new_doc.title.clone(), e.to_string()));
                     pb_new.inc(1);
                     continue;
                 }
             };
 
-            // Create document - push pure markdown content without frontmatter
-            // Use original file content (new_doc.content already contains full content for files without frontmatter)
-            let full_content = &new_doc.content;
-
+            // Create document - push pure markdown content
             let doc_create = DocumentCreate {
                 category_id,
-                title: new_doc.front_matter.title.clone(),
-                content: full_content.to_string(),
-                description: new_doc.front_matter.description.clone(),
-                doc_type: new_doc.front_matter.doc_type.clone().or(Some("knowledge".to_string())),
-                priority: new_doc.front_matter.priority.or(Some(0)),
+                title: new_doc.title.clone(),
+                content: new_doc.content.clone(),
+                description: None,
+                doc_type: Some("knowledge".to_string()),
+                priority: Some(0),
                 is_required: None,
             };
 
             match client.create_document(doc_create).await {
                 Ok(created_doc) => {
-                    // Read the file content for checksum calculation (pure markdown, no frontmatter)
-                    let updated_full_content = match read_file(&new_doc.file_path) {
-                        Ok(content) => content,
-                        Err(_) => full_content.to_string(),
+                    // Calculate checksum for local state
+                    let checksum = calculate_checksum(&new_doc.content);
+
+                    // Extract category info from created document
+                    let (cat_name, cat_uuid) = created_doc.category
+                        .as_ref()
+                        .map(|c| (c.name.clone(), c.uuid.clone()))
+                        .unwrap_or_else(|| (
+                            String::new(),
+                            docuram_config.docuram.category_uuid.clone().unwrap_or_default()
+                        ));
+
+                    // Add new document to docuram_config.documents
+                    let new_doc_info = DocumentInfo {
+                        id: created_doc.id,
+                        uuid: created_doc.uuid.clone(),
+                        title: created_doc.title.clone(),
+                        category_id: category_id,
+                        category_name: cat_name,
+                        category_path: category_path.clone(),
+                        category_uuid: cat_uuid,
+                        doc_type: created_doc.doc_type.clone(),
+                        version: created_doc.version,
+                        path: new_doc.file_path.clone(),
+                        checksum: checksum.clone(),
+                        is_required: false,
+                        // Local state fields
+                        local_checksum: Some(checksum),
+                        last_sync: Some(chrono::Utc::now().to_rfc3339()),
+                        pending_deletion: false,
                     };
 
-                    // Calculate checksum for local state (pure markdown content without frontmatter)
-                    let checksum = calculate_checksum(&updated_full_content);
+                    docuram_config.documents.push(new_doc_info);
 
-                    // Update local state with complete metadata
-                    local_state.upsert_document(crate::utils::storage::LocalDocumentInfo {
-                        uuid: created_doc.uuid.clone(),
-                        path: new_doc.file_path.clone(),
-                        checksum,
-                        version: created_doc.version,
-                        last_sync: chrono::Utc::now().to_rfc3339(),
-                        title: created_doc.title.clone(),
-                        category_path: docuram_config.docuram.category_path.clone(),  // Use category from config
-                        category_uuid: docuram_config.docuram.category_uuid.clone().unwrap_or_default(),  // Use category UUID from config
-                        doc_type: new_doc.front_matter.doc_type.clone().unwrap_or_else(|| "knowledge".to_string()),  // Use doc_type from new_doc's front_matter
-                        description: created_doc.description.clone(),
-                        priority: None,
-                        is_required: false,
-                        pending_deletion: false,
-                    });
+                    // Remove from local_documents if it was there
+                    docuram_config.local_documents.retain(|d| d.path != new_doc.file_path);
 
                     created_count += 1;
                 }
                 Err(e) => {
-                    failed_new_docs.push((new_doc.front_matter.title.clone(), e.to_string()));
+                    failed_new_docs.push((new_doc.title.clone(), e.to_string()));
                 }
             }
 
@@ -526,14 +494,22 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
         pb_new.finish_with_message("Done");
     }
 
-    // Save local state
-    local_state.save()
-        .context("Failed to save local state")?;
+    // Save docuram config with updated local state
+    docuram_config.save()
+        .context("Failed to save docuram.json")?;
 
     // If we created new documents, update docuram.json from server
+    // But preserve local state fields (local_checksum, last_sync, pending_deletion)
     if created_count > 0 {
         println!();
         println!("{}", style("Updating docuram.json from server...").cyan());
+
+        // Save local state before fetching server config
+        // Map: uuid -> (local_checksum, last_sync, pending_deletion)
+        let local_state_backup: std::collections::HashMap<String, (Option<String>, Option<String>, bool)> =
+            docuram_config.all_documents()
+                .map(|d| (d.uuid.clone(), (d.local_checksum.clone(), d.last_sync.clone(), d.pending_deletion)))
+                .collect();
 
         // Get category UUID from docuram config
         let category_uuid = match &docuram_config.docuram.category_uuid {
@@ -551,10 +527,17 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
             match client.get_docuram_config(&config_url).await {
                 Ok(updated_config) => {
-                    // Save updated config
+                    // Save server config first
                     if let Err(e) = updated_config.save() {
                         println!("{}", style(format!("Warning: Failed to save updated docuram.json: {}", e)).yellow());
                     } else {
+                        // Reload and restore local state
+                        if let Ok(mut reloaded_config) = DocuramConfig::load() {
+                            restore_local_state(&mut reloaded_config, &local_state_backup);
+                            if let Err(e) = reloaded_config.save() {
+                                println!("{}", style(format!("Warning: Failed to save local state: {}", e)).yellow());
+                            }
+                        }
                         println!("{}", style("✓ Updated docuram.json").green());
                     }
                 }
@@ -575,10 +558,17 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
 
                                 match client.get_docuram_config(&new_config_url).await {
                                     Ok(updated_config) => {
-                                        // Save updated config
+                                        // Save server config first
                                         if let Err(e) = updated_config.save() {
                                             println!("{}", style(format!("Warning: Failed to save updated docuram.json: {}", e)).yellow());
                                         } else {
+                                            // Reload and restore local state
+                                            if let Ok(mut reloaded_config) = DocuramConfig::load() {
+                                                restore_local_state(&mut reloaded_config, &local_state_backup);
+                                                if let Err(e) = reloaded_config.save() {
+                                                    println!("{}", style(format!("Warning: Failed to save local state: {}", e)).yellow());
+                                                }
+                                            }
                                             println!("{}", style("✓ Updated docuram.json with refreshed category UUID").green());
                                         }
                                     }
@@ -634,36 +624,16 @@ pub async fn execute(documents: Vec<String>, message: Option<String>) -> Result<
     Ok(())
 }
 
-/// Remove docuram metadata frontmatter from content before uploading
-fn remove_docuram_metadata(content: &str) -> String {
-    // Check if content starts with docuram frontmatter
-    if content.starts_with("---\ndocuram:") || content.starts_with("---\r\ndocuram:") {
-        // Find the end of frontmatter (second occurrence of "---")
-        let lines: Vec<&str> = content.lines().collect();
-        let mut end_index = 0;
-        let mut found_start = false;
-
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed == "---" {
-                if found_start {
-                    // Found the closing "---"
-                    end_index = i + 1;
-                    break;
-                } else {
-                    // Found the opening "---"
-                    found_start = true;
-                }
-            }
-        }
-
-        if end_index > 0 && end_index < lines.len() {
-            // Return content after frontmatter, skipping any leading empty lines
-            let remaining = lines[end_index..].join("\n");
-            return remaining.trim_start().to_string();
+/// Restore local state fields to a config after server update
+fn restore_local_state(
+    config: &mut DocuramConfig,
+    backup: &std::collections::HashMap<String, (Option<String>, Option<String>, bool)>,
+) {
+    for doc in config.all_documents_mut() {
+        if let Some((local_checksum, last_sync, pending_deletion)) = backup.get(&doc.uuid) {
+            doc.local_checksum = local_checksum.clone();
+            doc.last_sync = last_sync.clone();
+            doc.pending_deletion = *pending_deletion;
         }
     }
-
-    // No frontmatter found or couldn't parse, return original
-    content.to_string()
 }

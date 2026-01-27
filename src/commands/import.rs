@@ -6,7 +6,7 @@ use std::fs;
 use walkdir::WalkDir;
 
 use crate::config::DocuramConfig;
-use crate::utils::{update_front_matter, FrontMatter};
+use crate::utils::write_file;
 
 /// Import documents from a git repository or local directory
 pub async fn execute(paths: Vec<String>, from: Option<String>, to: Option<String>) -> Result<()> {
@@ -346,59 +346,17 @@ fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Import a single file in-place (convert at its current location)
+/// Import a single file in-place (validate it's under docuram/)
 async fn import_file_in_place(file_path: &Path) -> Result<()> {
-    // Read file content
-    let content = fs::read_to_string(file_path)
+    // Validate file is readable
+    let _content = fs::read_to_string(file_path)
         .context("Failed to read file")?;
 
-    // Check if already converted
-    if extract_uuid_from_frontmatter(&content).is_some() {
-        anyhow::bail!("Document already converted: {}", file_path.display());
-    }
+    // Derive category from the file's path relative to docuram/ (validates path)
+    let _category = derive_category_from_path(file_path)?;
 
-    // Extract title from filename
-    let title = extract_title(file_path, &content)?;
-
-    // Derive category from the file's path relative to docuram/
-    let full_category = derive_category_from_path(file_path)?;
-
-    // Load docuram.json to check for existing category UUID
-    let category_uuid = match DocuramConfig::load() {
-        Ok(config) => {
-            // Check if the document's category matches the main docuram category
-            if full_category == config.docuram.category_path {
-                // Use the existing category UUID from docuram.json
-                config.docuram.category_uuid.clone()
-            } else {
-                // Category doesn't match, leave empty for server to assign
-                None
-            }
-        }
-        Err(_) => {
-            // If docuram.json cannot be loaded, leave empty
-            None
-        }
-    };
-
-    // Create front matter without UUID (server will generate)
-    let front_matter = FrontMatter {
-        schema: "TEAMTURBO DOCURAM DOCUMENT".to_string(),
-        category: full_category,
-        title: title.clone(),
-        slug: None,
-        description: Some("Converted to Docuram format".to_string()),
-        doc_type: Some("knowledge".to_string()),
-        priority: Some(0),
-        is_required: None,
-        uuid: None,  // Don't generate UUID, let server handle it
-        category_uuid,  // Use existing category UUID if matches, otherwise None
-        version: Some(1),
-    };
-
-    // Write file with front matter (in-place)
-    update_front_matter(file_path, &front_matter, &content)?;
-
+    // File is already a valid markdown file under docuram/
+    // No conversion needed - push command will detect it as new
     Ok(())
 }
 
@@ -440,61 +398,16 @@ async fn import_file_remote(
     let target_dir = PathBuf::from("docuram").join(&full_category);
     fs::create_dir_all(&target_dir)?;
 
-    // 标题已经包含 .md 后缀（后端自动添加），不需要再次添加
+    // Use filename with .md extension
     let target_file = target_dir.join(sanitize_filename(&title));
 
-    // Check if target file already exists with valid frontmatter
+    // Check if target file already exists
     if target_file.exists() {
-        if let Ok(existing_content) = crate::utils::read_file(&target_file) {
-            if extract_uuid_from_frontmatter(&existing_content).is_some() {
-                anyhow::bail!("Document already exists at path: {}", target_file.display());
-            }
-        }
+        anyhow::bail!("Document already exists at path: {}", target_file.display());
     }
 
-    // Determine source description
-    let source_description = if is_single_file {
-        format!("Imported from {}", file_path.file_name().unwrap_or_default().to_string_lossy())
-    } else {
-        let relative_path = file_path.strip_prefix(source_dir).unwrap_or(file_path);
-        format!("Imported from {}", relative_path.display())
-    };
-
-    // Load docuram.json to check for existing category UUID
-    let category_uuid = match DocuramConfig::load() {
-        Ok(config) => {
-            // Check if the document's category matches the main docuram category
-            if full_category == config.docuram.category_path {
-                // Use the existing category UUID from docuram.json
-                config.docuram.category_uuid.clone()
-            } else {
-                // Category doesn't match, leave empty for server to assign
-                None
-            }
-        }
-        Err(_) => {
-            // If docuram.json cannot be loaded, leave empty
-            None
-        }
-    };
-
-    // Create front matter without UUID (server will generate)
-    let front_matter = FrontMatter {
-        schema: "TEAMTURBO DOCURAM DOCUMENT".to_string(),
-        category: full_category.clone(),
-        title: title.clone(),
-        slug: None,
-        description: Some(source_description),
-        doc_type: Some("knowledge".to_string()),
-        priority: Some(0),
-        is_required: None,
-        uuid: None,  // Don't generate UUID, let server handle it
-        category_uuid,  // Use existing category UUID if matches, otherwise None
-        version: Some(1),
-    };
-
-    // Write file with front matter
-    update_front_matter(&target_file, &front_matter, &content)?;
+    // Write file as pure markdown (no frontmatter)
+    write_file(&target_file, &content)?;
 
     // Note: We don't update local state here because the document hasn't been synced to server yet
     // The push command will handle syncing to server and updating state.json
@@ -517,42 +430,6 @@ fn extract_title(file_path: &Path, _content: &str) -> Result<String> {
     };
 
     Ok(title)
-}
-
-/// Extract UUID from frontmatter in content
-fn extract_uuid_from_frontmatter(content: &str) -> Option<String> {
-    // Check if content starts with frontmatter delimiter
-    if !content.starts_with("---") {
-        return None;
-    }
-
-    // Find the end of frontmatter
-    let lines: Vec<&str> = content.lines().collect();
-    let mut end_index = None;
-    for (i, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            end_index = Some(i);
-            break;
-        }
-    }
-
-    if let Some(end) = end_index {
-        let frontmatter_text = lines[1..end].join("\n");
-
-        // Parse YAML frontmatter
-        if let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter_text) {
-            // Try to extract uuid from docuram.uuid
-            if let Some(docuram) = frontmatter.get("docuram") {
-                if let Some(uuid) = docuram.get("uuid") {
-                    if let Some(uuid_str) = uuid.as_str() {
-                        return Some(uuid_str.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Normalize category path by removing ./docuram/ or docuram/ prefix and trailing slashes

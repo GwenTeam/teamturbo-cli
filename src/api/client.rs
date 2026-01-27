@@ -1005,3 +1005,182 @@ pub struct Recipient {
     pub email: String,
     pub status: String,
 }
+
+// ============ Public API (no authentication required) ============
+
+/// Public API response wrapper
+#[derive(Debug, Deserialize)]
+pub struct PublicApiResponse<T> {
+    pub status: i32,
+    #[serde(flatten)]
+    pub data: T,
+}
+
+/// Global dependencies list response
+#[derive(Debug, Deserialize)]
+pub struct GlobalDependenciesResponse {
+    pub global_dependencies: Vec<GlobalDependencyCategory>,
+    pub source: PublicSource,
+}
+
+/// Global dependency category info
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobalDependencyCategory {
+    pub id: i64,
+    pub uuid: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub path: String,
+    pub category_type: i32,
+    pub document_count: i64,
+    pub subcategories: Vec<GlobalSubcategory>,
+}
+
+/// Global dependency subcategory
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobalSubcategory {
+    pub id: i64,
+    pub uuid: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub document_count: i64,
+}
+
+/// Download global dependency response
+#[derive(Debug, Deserialize)]
+pub struct DownloadGlobalDependencyResponse {
+    pub category: GlobalDependencyCategory,
+    pub documents: Vec<GlobalDocument>,
+    pub source: PublicSource,
+}
+
+/// Global document with content
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobalDocument {
+    pub id: i64,
+    pub uuid: String,
+    pub title: String,
+    pub content: Option<String>,
+    pub description: Option<String>,
+    pub category_id: i64,
+    pub category_name: String,
+    pub category_path: String,
+    pub category_uuid: String,
+    pub doc_type: String,
+    pub version: i64,
+    pub path: String,
+    pub checksum: String,
+    pub is_required: bool,
+}
+
+/// Public source info
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PublicSource {
+    pub name: String,
+    pub url: String,
+    pub version: String,
+}
+
+/// Public API client for docuram.teamturbo.io
+pub struct PublicApiClient {
+    base_url: String,
+    client: Client,
+}
+
+impl PublicApiClient {
+    /// Create a new public API client
+    pub fn new(base_url: String) -> Self {
+        let client = Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self { base_url, client }
+    }
+
+    /// Default public API URL
+    pub fn default_url() -> &'static str {
+        "https://docuram.teamturbo.io"
+    }
+
+    /// Fetch global dependencies list
+    pub async fn get_global_dependencies(&self) -> Result<GlobalDependenciesResponse> {
+        let url = format!("{}/api/docuram/public/global_dependencies", self.base_url);
+        logger::debug("public_api", &format!("Fetching global dependencies from {}", url));
+        logger::http_request("GET", &url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch global dependencies")?;
+
+        let status = response.status().as_u16();
+        logger::http_response(status, &url);
+
+        match response.status() {
+            StatusCode::OK => {
+                let api_response: PublicApiResponse<GlobalDependenciesResponse> = response
+                    .json()
+                    .await
+                    .context("Failed to parse global dependencies response")?;
+
+                if api_response.status != 0 {
+                    anyhow::bail!("API returned error status: {}", api_response.status);
+                }
+
+                Ok(api_response.data)
+            }
+            StatusCode::FORBIDDEN => {
+                anyhow::bail!("Access denied. Public API is only available from docuram.teamturbo.io")
+            }
+            status => {
+                let error_text = response.text().await.unwrap_or_default();
+                anyhow::bail!("Failed to fetch global dependencies (HTTP {}): {}", status, error_text)
+            }
+        }
+    }
+
+    /// Download a global dependency's documents
+    pub async fn download_global_dependency(&self, uuid: &str) -> Result<DownloadGlobalDependencyResponse> {
+        let url = format!("{}/api/docuram/public/global_dependencies/{}/download", self.base_url, uuid);
+        logger::debug("public_api", &format!("Downloading global dependency {} from {}", uuid, url));
+        logger::http_request("GET", &url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to download global dependency")?;
+
+        let status = response.status().as_u16();
+        logger::http_response(status, &url);
+
+        match response.status() {
+            StatusCode::OK => {
+                let api_response: PublicApiResponse<DownloadGlobalDependencyResponse> = response
+                    .json()
+                    .await
+                    .context("Failed to parse download response")?;
+
+                if api_response.status != 0 {
+                    anyhow::bail!("API returned error status: {}", api_response.status);
+                }
+
+                Ok(api_response.data)
+            }
+            StatusCode::NOT_FOUND => {
+                anyhow::bail!("Global dependency not found: {}", uuid)
+            }
+            StatusCode::FORBIDDEN => {
+                anyhow::bail!("Access denied. Public API is only available from docuram.teamturbo.io")
+            }
+            status => {
+                let error_text = response.text().await.unwrap_or_default();
+                anyhow::bail!("Failed to download global dependency (HTTP {}): {}", status, error_text)
+            }
+        }
+    }
+}

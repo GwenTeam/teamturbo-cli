@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::api::ApiClient;
 use crate::config::{CliConfig, DocuramConfig};
-use crate::utils::{storage::LocalState, read_file, calculate_checksum};
+use crate::utils::{read_file, calculate_checksum};
 
 pub async fn execute(document: Option<String>) -> Result<()> {
     println!("{}", style("Document Diff").cyan().bold());
@@ -26,9 +26,6 @@ pub async fn execute(document: Option<String>) -> Result<()> {
 
     // Create API client (unused for now, but needed for future remote diff)
     let _client = ApiClient::new(server_url.to_string(), auth.access_token.clone());
-
-    // Load local state
-    let local_state = LocalState::load()?;
 
     // Determine which documents to check
     let docs_to_check: Vec<_> = if let Some(uuid) = document {
@@ -87,58 +84,54 @@ pub async fn execute(document: Option<String>) -> Result<()> {
 
         let current_checksum = calculate_checksum(&current_content);
 
-        // Check status
-        match local_state.get_document(&doc_info.uuid) {
-            Some(local_info) => {
-                if current_checksum != local_info.checksum {
-                    // Modified since last sync
-                    println!("{} {} {}",
-                        style("modified:").yellow().bold(),
-                        style(&doc_info.uuid).yellow(),
-                        style(format!("({})", doc_info.title)).dim()
-                    );
-                    modified_count += 1;
-
-                    // Show line count diff
-                    let _old_lines = local_info.checksum.len(); // Placeholder for future use
-                    let new_lines = current_content.lines().count();
-                    println!("  {} {} lines",
-                        style("→").dim(),
-                        style(format!("{}", new_lines)).cyan()
-                    );
-                } else if current_checksum != doc_info.checksum {
-                    // Local matches state but remote is different
-                    println!("{} {} {}",
-                        style("outdated:").cyan().bold(),
-                        style(&doc_info.uuid).cyan(),
-                        style(format!("({})", doc_info.title)).dim()
-                    );
-                    println!("  {} Remote has updates available",
-                        style("→").dim()
-                    );
-                    up_to_date_count += 1;
-                } else {
-                    // Up to date
-                    if docs_to_check.len() == 1 {
-                        // Only show if checking single document
-                        println!("{} {} {}",
-                            style("clean:").green().bold(),
-                            style(&doc_info.uuid).green(),
-                            style(format!("({})", doc_info.title)).dim()
-                        );
-                    }
-                    up_to_date_count += 1;
-                }
-            }
-            None => {
-                // No local state, untracked
+        // Check status based on local_checksum field in docuram.json
+        if let Some(ref local_checksum) = doc_info.local_checksum {
+            if current_checksum != *local_checksum {
+                // Modified since last sync
                 println!("{} {} {}",
-                    style("untracked:").magenta().bold(),
-                    style(&doc_info.uuid).magenta(),
+                    style("modified:").yellow().bold(),
+                    style(&doc_info.uuid).yellow(),
                     style(format!("({})", doc_info.title)).dim()
                 );
-                untracked_count += 1;
+                modified_count += 1;
+
+                // Show line count diff
+                let new_lines = current_content.lines().count();
+                println!("  {} {} lines",
+                    style("→").dim(),
+                    style(format!("{}", new_lines)).cyan()
+                );
+            } else if current_checksum != doc_info.checksum {
+                // Local matches saved state but remote checksum is different
+                println!("{} {} {}",
+                    style("outdated:").cyan().bold(),
+                    style(&doc_info.uuid).cyan(),
+                    style(format!("({})", doc_info.title)).dim()
+                );
+                println!("  {} Remote has updates available",
+                    style("→").dim()
+                );
+                up_to_date_count += 1;
+            } else {
+                // Up to date
+                if docs_to_check.len() == 1 {
+                    // Only show if checking single document
+                    println!("{} {} {}",
+                        style("clean:").green().bold(),
+                        style(&doc_info.uuid).green(),
+                        style(format!("({})", doc_info.title)).dim()
+                    );
+                }
+                up_to_date_count += 1;
             }
+        } else {
+            // No local_checksum, document hasn't been synced yet
+            println!("{} {} {}",
+                style("untracked:").magenta().bold(),
+                style(&doc_info.uuid).magenta(),
+                style(format!("({})", doc_info.title)).dim()
+            );
+            untracked_count += 1;
         }
     }
 

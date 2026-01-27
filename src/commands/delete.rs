@@ -6,8 +6,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::DocuramConfig;
-use crate::utils::storage::LocalState;
-use crate::utils::{read_file, extract_front_matter};
 
 pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<()> {
     println!();
@@ -18,12 +16,9 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
         anyhow::bail!("No paths specified. Please provide at least one document or directory path.");
     }
 
-    // Load docuram config
-    let mut docuram_config = DocuramConfig::load()
+    // Load docuram config with migration from state.json
+    let mut docuram_config = DocuramConfig::load_with_migration()
         .context("Failed to load docuram.json. Make sure you're in a docuram project directory.")?;
-
-    // Load local state
-    let mut local_state = LocalState::load().unwrap_or_default();
 
     // Resolve paths to absolute paths and normalize
     let base_dir = std::env::current_dir()?;
@@ -60,7 +55,7 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
     for target_path in &target_paths {
         if target_path.is_file() {
             // Single file - find matching document
-            if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path, working_category_path) {
+            if let Some(doc) = find_document_by_path(&docuram_config, target_path, working_category_path) {
                 docs_to_delete.push(doc);
                 files_to_delete.push(target_path.clone());
             } else {
@@ -74,14 +69,13 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
             // For non-existent paths, we check docuram.json for documents that would be under this path
             let (dir_docs, dir_files) = find_documents_in_directory(
                 &docuram_config,
-                &local_state,
                 target_path,
                 working_category_path
             );
 
             if dir_docs.is_empty() {
                 // If still no documents found, try as a single file
-                if let Some(doc) = find_document_by_path(&docuram_config, &local_state, target_path, working_category_path) {
+                if let Some(doc) = find_document_by_path(&docuram_config, target_path, working_category_path) {
                     docs_to_delete.push(doc);
                     if target_path.exists() {
                         files_to_delete.push(target_path.clone());
@@ -113,18 +107,18 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
         let doc_path = PathBuf::from(&doc.path);
         let file_exists = doc_path.exists();
 
-        // Check if document is in state.json by path (HashMap is keyed by path, not UUID)
-        let in_state = local_state.documents.contains_key(&doc.path) ||
-            local_state.get_document_by_uuid(&doc.uuid).is_some();
+        // Check if document has been synced (has local_checksum in docuram.json)
+        let doc_info = docuram_config.get_document_by_uuid(&doc.uuid);
+        let is_synced = doc_info.map(|d| d.local_checksum.is_some()).unwrap_or(false);
 
-        if in_state {
-            // Document is in state.json, meaning it was uploaded
+        if is_synced {
+            // Document has been synced, meaning it was uploaded
             uploaded_docs.push(doc.clone());
         } else if file_exists {
-            // Document exists locally but not in state.json (local-only)
+            // Document exists locally but not synced (local-only)
             local_only_docs.push(doc.clone());
         } else {
-            // Document is in docuram.json but file doesn't exist and not uploaded (config-only)
+            // Document is in docuram.json but file doesn't exist and not synced (config-only)
             config_only_docs.push(doc.clone());
         }
     }
@@ -183,31 +177,27 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
     println!("{}", style("Deleting documents locally...").bold());
     println!();
 
-    // Mark uploaded and config-only documents as pending deletion in state.json
-    let server_docs: Vec<_> = uploaded_docs.iter().chain(config_only_docs.iter()).collect();
+    // Mark uploaded documents as pending deletion in docuram.json
+    let server_docs: Vec<_> = uploaded_docs.iter().collect();
     if !server_docs.is_empty() {
         println!("{}", style("Marking documents for deletion from server...").dim());
 
         for doc in &server_docs {
-            // Try to find the document in state.json by path first, then by UUID
-            // HashMap is keyed by path, not UUID
-            let doc_path_key = if local_state.documents.contains_key(&doc.path) {
-                Some(doc.path.clone())
-            } else if let Some(state_doc) = local_state.get_document_by_uuid(&doc.uuid) {
-                Some(state_doc.path.clone())
+            // Mark for deletion in docuram.json
+            if docuram_config.mark_for_deletion(&doc.uuid) {
+                println!("  {} Marked for deletion: {}", style("⏳").yellow(), doc.title);
             } else {
-                None
-            };
-
-            if let Some(path_key) = doc_path_key {
-                if let Some(doc_info) = local_state.documents.get_mut(&path_key) {
-                    doc_info.pending_deletion = true;
-                    println!("  {} Marked for deletion: {}", style("⏳").yellow(), doc.title);
-                }
-            } else {
-                // Document not in state.json yet (config-only), no need to mark
-                println!("  {} Will remove from config: {}", style("○").dim(), doc.title);
+                println!("  {} Document not found in config: {}", style("○").dim(), doc.title);
             }
+        }
+        println!();
+    }
+
+    // Config-only documents will just be removed from docuram.json
+    if !config_only_docs.is_empty() {
+        println!("{}", style("Will remove from config:").dim());
+        for doc in &config_only_docs {
+            println!("  {} {}", style("○").dim(), doc.title);
         }
         println!();
     }
@@ -257,24 +247,18 @@ pub async fn execute(paths: Vec<String>, force: bool, _verbose: bool) -> Result<
 
     let removed_from_config = removed_from_documents + removed_from_requires;
 
-    // Update state.json
-    // - Remove local-only documents (not synced) completely from state.json
-    // - Keep uploaded documents in state.json with pending_deletion flag for push to handle
+    // Local-only and config-only documents are removed from docuram.json entirely
+    // (they were not synced, so no need to mark for deletion)
     for doc in &local_only_docs {
-        // Try to remove by path first (HashMap is keyed by path), then by UUID
-        if local_state.documents.contains_key(&doc.path) {
-            local_state.documents.remove(&doc.path);
-        } else {
-            local_state.remove_document_by_uuid(&doc.uuid);
-        }
+        docuram_config.remove_document_by_uuid(&doc.uuid);
     }
-    // Config-only documents are not in state.json, so no need to update
+    for doc in &config_only_docs {
+        docuram_config.remove_document_by_uuid(&doc.uuid);
+    }
 
-    // Save updated configs
+    // Save updated config
     docuram_config.save()
         .context("Failed to save docuram.json")?;
-    local_state.save()
-        .context("Failed to save state.json")?;
 
     println!("{}", style("Summary:").bold());
     println!("  {} file(s) deleted locally", files_to_delete.len());
@@ -308,7 +292,6 @@ struct DocumentToDelete {
 /// Find a document by its file path
 fn find_document_by_path(
     docuram_config: &DocuramConfig,
-    local_state: &LocalState,
     file_path: &Path,
     working_category_path: &str,
 ) -> Option<DocumentToDelete> {
@@ -328,39 +311,8 @@ fn find_document_by_path(
         }
     }
 
-    // Try to match by path in state.json
-    for (uuid, doc_info) in &local_state.documents {
-        let doc_path = PathBuf::from(&doc_info.path);
-        if doc_path == file_path || doc_path.canonicalize().ok() == file_path.canonicalize().ok() {
-            // Find document info from docuram.json
-            let doc_from_config = docuram_config.all_documents()
-                .find(|d| d.uuid == *uuid);
-
-            let title = doc_from_config
-                .map(|d| d.title.clone())
-                .unwrap_or_else(|| {
-                    file_path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Unknown")
-                        .to_string()
-                });
-
-            let (category_uuid, category_path) = doc_from_config
-                .map(|d| (d.category_uuid.clone(), d.category_path.clone()))
-                .unwrap_or_else(|| (String::new(), String::new()));
-
-            return Some(DocumentToDelete {
-                uuid: uuid.clone(),
-                title,
-                path: doc_info.path.clone(),
-                category_uuid,
-                category_path,
-            });
-        }
-    }
-
-    // Try to read frontmatter from the file itself
-    // This handles new documents that haven't been pushed yet (including those without UUID)
+    // Handle markdown files that exist locally but aren't in docuram.json
+    // These are local-only files that can still be deleted
     if file_path.exists() && file_path.extension().and_then(|s| s.to_str()) == Some("md") {
         // Get relative path from current directory
         let relative_path = std::env::current_dir()
@@ -369,24 +321,6 @@ fn find_document_by_path(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
-        if let Ok(content) = read_file(file_path) {
-            if let Ok(Some((front_matter, _))) = extract_front_matter(&content) {
-                // Use UUID from frontmatter if available, otherwise use path as identifier
-                // Documents without UUID are local-only and can still be deleted
-                let uuid = front_matter.uuid.unwrap_or_else(|| format!("local:{}", relative_path));
-
-                return Some(DocumentToDelete {
-                    uuid,
-                    title: front_matter.title,
-                    path: relative_path,
-                    category_uuid: String::new(), // New documents don't have category UUID yet
-                    category_path: front_matter.category,
-                });
-            }
-        }
-
-        // Fallback: markdown file without frontmatter (empty or plain markdown)
-        // Still allow deletion as a local-only file
         let title = file_path.file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Unknown")
@@ -407,7 +341,6 @@ fn find_document_by_path(
 /// Find all documents within a directory
 fn find_documents_in_directory(
     docuram_config: &DocuramConfig,
-    local_state: &LocalState,
     dir_path: &Path,
     working_category_path: &str,
 ) -> (Vec<DocumentToDelete>, Vec<PathBuf>) {
@@ -465,44 +398,7 @@ fn find_documents_in_directory(
         }
     }
 
-    // Search in state.json for documents not in docuram.json
-    for (uuid, doc_info) in &local_state.documents {
-        if seen_uuids.contains(uuid) {
-            continue;
-        }
-
-        let doc_path = PathBuf::from(&doc_info.path);
-        if let Ok(canonical_doc) = doc_path.canonicalize() {
-            if let Ok(canonical_dir) = dir_path.canonicalize() {
-                if canonical_doc.starts_with(&canonical_dir) {
-                    let title = doc_path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Unknown")
-                        .to_string();
-
-                    // Try to get category info from docuram.json
-                    let (category_uuid, category_path) = docuram_config.all_documents()
-                        .find(|d| d.uuid == *uuid)
-                        .map(|d| (d.category_uuid.clone(), d.category_path.clone()))
-                        .unwrap_or_else(|| (String::new(), String::new()));
-
-                    docs.push(DocumentToDelete {
-                        uuid: uuid.clone(),
-                        title,
-                        path: doc_info.path.clone(),
-                        category_uuid,
-                        category_path,
-                    });
-                    if seen_paths.insert(canonical_doc.clone()) {
-                        files.push(doc_path);
-                    }
-                    seen_uuids.insert(uuid.clone());
-                }
-            }
-        }
-    }
-
-    // Search for markdown files with frontmatter in the directory
+    // Search for markdown files in the directory
     // This handles new documents that haven't been pushed yet
     if let Ok(canonical_dir) = dir_path.canonicalize() {
         if let Ok(entries) = fs::read_dir(&canonical_dir) {
@@ -513,7 +409,6 @@ fn find_documents_in_directory(
                 if file_path.is_dir() {
                     let (sub_docs, sub_files) = find_documents_in_directory(
                         docuram_config,
-                        local_state,
                         &file_path,
                         working_category_path,
                     );
@@ -531,51 +426,27 @@ fn find_documents_in_directory(
                         }
                     }
                 } else if file_path.extension().and_then(|s| s.to_str()) == Some("md") {
-                    // Try to read frontmatter from markdown files
-                    // This handles new documents that haven't been pushed yet (including those without UUID)
+                    // Handle markdown files that exist locally but aren't in docuram.json
                     let relative_path = std::env::current_dir()
                         .ok()
                         .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
-                    let mut found = false;
-                    if let Ok(content) = read_file(&file_path) {
-                        if let Ok(Some((front_matter, _))) = extract_front_matter(&content) {
-                            // Use UUID from frontmatter if available, otherwise use path as identifier
-                            let uuid = front_matter.uuid.clone()
-                                .unwrap_or_else(|| format!("local:{}", relative_path));
+                    let uuid = format!("local:{}", relative_path);
+                    if seen_uuids.insert(uuid.clone()) {
+                        let title = file_path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unknown")
+                            .to_string();
 
-                            if seen_uuids.insert(uuid.clone()) {
-                                docs.push(DocumentToDelete {
-                                    uuid,
-                                    title: front_matter.title,
-                                    path: relative_path.clone(),
-                                    category_uuid: String::new(),
-                                    category_path: front_matter.category,
-                                });
-                                found = true;
-                            }
-                        }
-                    }
-
-                    // Fallback: markdown file without frontmatter (empty or plain markdown)
-                    if !found {
-                        let uuid = format!("local:{}", relative_path);
-                        if seen_uuids.insert(uuid.clone()) {
-                            let title = file_path.file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("Unknown")
-                                .to_string();
-
-                            docs.push(DocumentToDelete {
-                                uuid,
-                                title,
-                                path: relative_path,
-                                category_uuid: String::new(),
-                                category_path: String::new(),
-                            });
-                        }
+                        docs.push(DocumentToDelete {
+                            uuid,
+                            title,
+                            path: relative_path,
+                            category_uuid: String::new(),
+                            category_path: String::new(),
+                        });
                     }
 
                     if let Ok(canonical_file) = file_path.canonicalize() {

@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use console::style;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::{HashSet, HashMap};
-use serde_yaml;
+use std::collections::HashSet;
 
 use crate::config::DocuramConfig;
 use crate::utils::{logger, calculate_checksum};
@@ -248,38 +247,44 @@ fn verify_req_directory(
 }
 
 fn verify_dependencies_directory(
-    docuram_path: &Path,
+    _docuram_path: &Path,
     docuram_config: &DocuramConfig,
     issues: &mut Vec<ValidationIssue>
 ) -> Result<()> {
-    let category_path = &docuram_config.docuram.category_path;
-    let dep_path = docuram_path.join(category_path).join("dependencies");
+    let working_category_path = &docuram_config.docuram.category_path;
+
+    // Dependencies are now at project root "dependencies/" directory
+    let dep_path = Path::new("dependencies");
 
     if !dep_path.exists() {
-        // Already warned in directory structure check
+        // Dependencies directory doesn't exist, which is fine if there are no requires
+        if !docuram_config.requires.is_empty() {
+            issues.push(ValidationIssue {
+                level: IssueLevel::Warning,
+                message: "dependencies/ directory is missing but there are required documents. Run 'teamturbo pull' to download.".to_string(),
+            });
+        }
         return Ok(());
     }
 
     // Get all files in dependencies directory recursively
-    let dep_files = collect_all_files(&dep_path)?;
+    let dep_files = collect_all_files(dep_path)?;
 
-    // Get all required document paths from config
-    let required_paths: HashSet<PathBuf> = docuram_config.requires.iter()
-        .map(|doc| Path::new(&doc.path).to_path_buf())
+    // Get all required document LOCAL paths from config
+    let required_paths: HashSet<String> = docuram_config.requires.iter()
+        .map(|doc| doc.local_path(working_category_path))
         .collect();
 
     // Check if any file in dependencies is not in the required list
     for file_path in &dep_files {
-        let relative_path = file_path.strip_prefix(docuram_path)
-            .unwrap_or(file_path);
-        let path_str = relative_path.to_string_lossy().to_string();
+        let path_str = file_path.to_string_lossy().to_string();
 
-        if !required_paths.iter().any(|p| p.to_string_lossy() == path_str) {
+        if !required_paths.contains(&path_str) {
             issues.push(ValidationIssue {
                 level: IssueLevel::Error,
                 message: format!(
                     "File '{}' in dependencies/ is not a server-pulled dependency. Dependencies should only contain documents pulled from the server.",
-                    relative_path.display()
+                    file_path.display()
                 ),
             });
         }
@@ -289,17 +294,21 @@ fn verify_dependencies_directory(
 }
 
 fn verify_document_integrity(
-    docuram_path: &Path,
+    _docuram_path: &Path,
     docuram_config: &DocuramConfig,
     issues: &mut Vec<ValidationIssue>
 ) -> Result<()> {
+    let working_category_path = &docuram_config.docuram.category_path;
+
     // Combine all documents (working + dependencies)
     let all_docs: Vec<_> = docuram_config.documents.iter()
         .chain(docuram_config.requires.iter())
         .collect();
 
     for doc in all_docs {
-        let doc_path = docuram_path.join(&doc.path);
+        // Use local_path() to get the correct local file path
+        let local_file_path = doc.local_path(working_category_path);
+        let doc_path = Path::new(&local_file_path);
 
         if !doc_path.exists() {
             // Will be caught in verify_documents_exist
@@ -312,78 +321,11 @@ fn verify_document_integrity(
             Err(e) => {
                 issues.push(ValidationIssue {
                     level: IssueLevel::Error,
-                    message: format!("Failed to read '{}': {}", doc.path, e),
+                    message: format!("Failed to read '{}': {}", local_file_path, e),
                 });
                 continue;
             }
         };
-
-        // Check for front matter
-        if !content.starts_with("---\n") {
-            issues.push(ValidationIssue {
-                level: IssueLevel::Error,
-                message: format!("Document '{}' is missing YAML front matter.", doc.path),
-            });
-            continue;
-        }
-
-        // Parse front matter
-        let parts: Vec<&str> = content.splitn(3, "---\n").collect();
-        if parts.len() < 3 {
-            issues.push(ValidationIssue {
-                level: IssueLevel::Error,
-                message: format!("Document '{}' has invalid front matter format.", doc.path),
-            });
-            continue;
-        }
-
-        let front_matter = parts[1];
-        let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(front_matter);
-
-        match parsed {
-            Ok(yaml) => {
-                // Check required front matter fields
-                let required_fields = vec!["schema", "uuid", "category", "title", "doc_type"];
-
-                if let Some(docuram_section) = yaml.get("docuram") {
-                    for field in &required_fields {
-                        if docuram_section.get(field).is_none() {
-                            issues.push(ValidationIssue {
-                                level: IssueLevel::Error,
-                                message: format!(
-                                    "Document '{}' is missing required field '{}' in front matter.",
-                                    doc.path, field
-                                ),
-                            });
-                        }
-                    }
-
-                    // Verify UUID matches
-                    if let Some(uuid) = docuram_section.get("uuid").and_then(|v| v.as_str()) {
-                        if uuid != doc.uuid {
-                            issues.push(ValidationIssue {
-                                level: IssueLevel::Warning,
-                                message: format!(
-                                    "Document '{}' has mismatched UUID. Front matter: '{}', Config: '{}'",
-                                    doc.path, uuid, doc.uuid
-                                ),
-                            });
-                        }
-                    }
-                } else {
-                    issues.push(ValidationIssue {
-                        level: IssueLevel::Error,
-                        message: format!("Document '{}' is missing 'docuram' section in front matter.", doc.path),
-                    });
-                }
-            }
-            Err(e) => {
-                issues.push(ValidationIssue {
-                    level: IssueLevel::Error,
-                    message: format!("Document '{}' has invalid YAML front matter: {}", doc.path, e),
-                });
-            }
-        }
 
         // Verify checksum
         let calculated_checksum = calculate_checksum(&content);
@@ -392,7 +334,7 @@ fn verify_document_integrity(
                 level: IssueLevel::Warning,
                 message: format!(
                     "Document '{}' has checksum mismatch. File may have been modified.",
-                    doc.path
+                    local_file_path
                 ),
             });
         }
@@ -402,28 +344,32 @@ fn verify_document_integrity(
 }
 
 fn verify_documents_exist(
-    docuram_path: &Path,
+    _docuram_path: &Path,
     docuram_config: &DocuramConfig,
     issues: &mut Vec<ValidationIssue>
 ) -> Result<()> {
+    let working_category_path = &docuram_config.docuram.category_path;
+
     // Check working documents
     for doc in &docuram_config.documents {
-        let doc_path = docuram_path.join(&doc.path);
+        let local_file_path = doc.local_path(working_category_path);
+        let doc_path = Path::new(&local_file_path);
         if !doc_path.exists() {
             issues.push(ValidationIssue {
                 level: IssueLevel::Error,
-                message: format!("Working document '{}' referenced in config but not found on disk.", doc.path),
+                message: format!("Working document '{}' referenced in config but not found on disk.", local_file_path),
             });
         }
     }
 
     // Check dependency documents
     for doc in &docuram_config.requires {
-        let doc_path = docuram_path.join(&doc.path);
+        let local_file_path = doc.local_path(working_category_path);
+        let doc_path = Path::new(&local_file_path);
         if !doc_path.exists() {
             issues.push(ValidationIssue {
                 level: IssueLevel::Warning,
-                message: format!("Dependency document '{}' referenced in config but not found on disk. Run 'teamturbo pull' to download.", doc.path),
+                message: format!("Dependency document '{}' referenced in config but not found on disk. Run 'teamturbo pull' to download.", local_file_path),
             });
         }
     }

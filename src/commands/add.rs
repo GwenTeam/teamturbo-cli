@@ -2,10 +2,9 @@ use anyhow::{Result, Context};
 use console::style;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 use crate::config::DocuramConfig;
-use crate::utils::{update_front_matter, FrontMatter};
+use crate::utils::write_file;
 
 /// Type of organic document to add
 #[derive(Debug, Clone, Copy)]
@@ -35,8 +34,8 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
     println!("{}", style("Add Organic Document").cyan().bold());
     println!();
 
-    // Load docuram config to validate we're in a docuram project and get category info
-    let docuram_config = DocuramConfig::load()
+    // Load docuram config to validate we're in a docuram project
+    let _docuram_config = DocuramConfig::load()
         .context("Failed to load docuram.json. Run 'teamturbo init' first.")?;
 
     // Use the organic directory directly under docuram/
@@ -52,10 +51,6 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
         );
     }
 
-    // Use the working category path from docuram config and append /organic
-    let working_category_path = docuram_config.docuram.category_path.clone();
-    let organic_category_path = format!("{}/organic", working_category_path);
-
     // Get the next available number for this document type
     let next_num = get_next_document_number(&organic_path, doc_type)?;
 
@@ -70,29 +65,11 @@ pub async fn execute(doc_type: DocType, title: Option<String>) -> Result<()> {
         anyhow::bail!("File already exists: {}", file_path.display());
     }
 
-    // Generate UUID for the new document
-    let doc_uuid = Uuid::new_v4().to_string();
-
-    // Create front matter
-    let front_matter = FrontMatter {
-        schema: "TEAMTURBO DOCURAM DOCUMENT".to_string(),
-        category: organic_category_path,
-        title: filename.clone(),
-        slug: None,
-        description: Some("Created by add command".to_string()),
-        doc_type: Some("knowledge".to_string()),
-        priority: Some(0),
-        is_required: None,
-        uuid: Some(doc_uuid),
-        category_uuid: None, // Will be set when pushed to server
-        version: Some(1),
-    };
-
-    // Generate document content (without the header, as it's now in front matter context)
+    // Generate pure markdown content (no frontmatter)
     let content = generate_document_content(doc_type, title.as_deref());
 
-    // Write file with front matter
-    update_front_matter(&file_path, &front_matter, &content)
+    // Write file as pure markdown
+    write_file(&file_path, &content)
         .context(format!("Failed to create file: {}", file_path.display()))?;
 
     println!("{} {}", 
